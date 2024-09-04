@@ -1,0 +1,5 @@
+pandas
+celery
+redis
+python-dotenv
+pytest
