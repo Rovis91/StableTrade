@@ -26,14 +26,27 @@ def main():
     # Generate parameter grid
     param_grid = generate_parameter_grid(param_ranges)
 
-    # Run grid search
+    # Run grid search (distributed via Celery)
     result_group = run_grid_search(df, args.balance, args.commission, param_grid)
 
     # Wait for all results to complete
     results = result_group.get()
 
-    # Save results to JSON
-    save_results_to_json(args.output, results)
+    # Collect and structure the final results
+    all_results = []
+    for result in results:
+        all_results.append({
+            "final_balance": result['final_balance'],
+            "cumulative_return": result['cumulative_return'],
+            "max_drawdown": result['max_drawdown'],
+            "sharpe_ratio": result['sharpe_ratio'],
+            "profit_factor": result['profit_factor'],
+            "total_trades": result['total_trades'],
+            "trade_log": result['trade_log']
+        })
+
+    # Save the aggregated results to JSON
+    save_results_to_json(args.output, all_results)
 
 if __name__ == "__main__":
     main()
