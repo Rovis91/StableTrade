@@ -24,3 +24,7 @@ env/
 # Data files
 data/*.csv
 data/*.json
+
+# Strategy files
+context.md
+risk.md

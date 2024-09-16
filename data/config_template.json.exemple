@@ -1,0 +1,13 @@
+{
+    "platform": "bitfinex", 
+    "pair": "EUTEUR",
+    "start": 1714514400000,                               # or ISO format 2024-09-15
+    "end": null,
+    "timeframe": "1m",
+    "output_path": "D:\\path\\to\\output\\directory",
+    "liquid": false,                                      # if the market is liquid, set this to true
+    "auth": {
+        "api_key": "",
+        "api_secret": ""
+    }
+}
