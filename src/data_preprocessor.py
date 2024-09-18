@@ -1,82 +1,105 @@
 import pandas as pd
-from src.logger import setup_logger
+import logging
+import os
 
-# Create a logger for this module
-logger = setup_logger(__name__)
+# Global indicator registry dictionary
+indicator_registry = {}
+
+def register_indicator(name):
+    """
+    Decorator to register a new indicator in the global registry.
+    """
+    def decorator(indicator_func):
+        if name in indicator_registry:
+            logging.warning(f"Overwriting existing indicator: {name}")
+        indicator_registry[name] = indicator_func
+        return indicator_func
+    return decorator
 
 class DataPreprocessor:
     def __init__(self, input_path: str, output_path: str):
-        """
-        Initialize the DataPreprocessor.
-
-        Args:
-            input_path (str): Path to the original data CSV file.
-            output_path (str): Path to save the enriched data CSV file.
-        """
         self.input_path = input_path
         self.output_path = output_path
+        self._validate_paths()
+
+    def _validate_paths(self):
+        """
+        Validate input and output paths.
+        """
+        if not os.path.isfile(self.input_path):
+            raise FileNotFoundError(f"Input file not found: {self.input_path}")
+        if not os.access(os.path.dirname(self.output_path), os.W_OK):
+            raise PermissionError(f"Cannot write to output path: {self.output_path}")
 
     def preprocess_data(self, required_indicators: dict):
         try:
-            logger.info("Loading data for preprocessing...")
+            logging.info("Loading data for preprocessing...")
             data = pd.read_csv(self.input_path)
-
-            # Ensure 'timestamp' remains in milliseconds
-            if 'timestamp' not in data.columns:
-                logger.error("'timestamp' column is missing in the input data.")
-                return
+            
+            # Validate data format once
+            self._validate_data_format(data)
 
             data.set_index('timestamp', inplace=True)
 
-            # Compute each required indicator
             for indicator, params in required_indicators.items():
-                if hasattr(self, f"compute_{indicator.lower()}"):
+                if indicator in indicator_registry:
                     for param in params:
-                        # Check if the indicator is already computed
-                        column_name = f"{indicator.upper()}_{param}"
-                        if column_name in data.columns:
-                            logger.warning(f"{column_name} already exists. Skipping computation.")
-                            continue
-                        getattr(self, f"compute_{indicator.lower()}")(data, param)
+                        try:
+                            indicator_registry[indicator](data, param)
+                        except Exception as e:
+                            logging.error(f"Error computing {indicator} with param {param}: {e}")
                 else:
-                    logger.warning(f"Indicator '{indicator}' is not implemented. Skipping.")
-
-            # Save the enriched data to a new file without changing the timestamp format
-            logger.info(f"Saving enriched data to {self.output_path}")
+                    logging.warning(f"Indicator '{indicator}' is not implemented.")
+            
+            logging.info(f"Saving enriched data to {self.output_path}")
             data.to_csv(self.output_path)
+        except FileNotFoundError as e:
+            logging.error(f"File not found: {e}")
+        except KeyError as e:
+            logging.error(f"Missing required column: {e}")
         except Exception as e:
-            logger.error(f"An error occurred during preprocessing: {e}")
+            logging.error(f"An error occurred during preprocessing: {e}")
+            raise
 
-    def compute_sma(self, data: pd.DataFrame, period: int):
+    def _validate_data_format(self, data: pd.DataFrame):
         """
-        Compute Simple Moving Average (SMA) and add it to the DataFrame.
+        Validate the data format to ensure required columns are present.
 
         Args:
-            data (pd.DataFrame): DataFrame containing market data.
-            period (int): The period for the SMA calculation.
+            data (pd.DataFrame): The DataFrame containing market data.
         """
-        # Ensure the 'close' column exists
-        if 'close' not in data.columns:
-            logger.warning("Missing 'close' column. Cannot compute SMA.")
-            return
+        required_columns = ['timestamp', 'close']
+        missing_columns = [col for col in required_columns if col not in data.columns]
         
-        column_name = f"SMA_{period}"
-        data[column_name] = data['close'].rolling(window=period).mean()
-        logger.info(f"Computed {column_name}.")
+        if missing_columns:
+            raise KeyError(f"Input data is missing required columns: {', '.join(missing_columns)}")
 
-    def compute_ema(self, data: pd.DataFrame, period: int):
-        """
-        Compute Exponential Moving Average (EMA) and add it to the DataFrame.
+@register_indicator('SMA')
+def compute_sma(data: pd.DataFrame, period: int):
+    """
+    Compute Simple Moving Average (SMA) and add it to the DataFrame.
 
-        Args:
-            data (pd.DataFrame): DataFrame containing market data.
-            period (int): The period for the EMA calculation.
-        """
-        # Ensure the 'close' column exists
-        if 'close' not in data.columns:
-            logger.warning("Missing 'close' column. Cannot compute EMA.")
-            return
+    Args:
+        data (pd.DataFrame): DataFrame containing market data.
+        period (int): The period for the SMA calculation.
+    """
+    column_name = f"SMA_{period}"
+    
+    # We assume 'close' column has already been validated in preprocess_data
+    data[column_name] = data['close'].rolling(window=period).mean()
+    logging.info(f"Computed {column_name}.")
 
-        column_name = f"EMA_{period}"
-        data[column_name] = data['close'].ewm(span=period, adjust=False).mean()
-        logger.info(f"Computed {column_name}.")
+@register_indicator('EMA')
+def compute_ema(data: pd.DataFrame, period: int):
+    """
+    Compute Exponential Moving Average (EMA) and add it to the DataFrame.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing market data.
+        period (int): The period for the EMA calculation.
+    """
+    column_name = f"EMA_{period}"
+    
+    # We assume 'close' column has already been validated in preprocess_data
+    data[column_name] = data['close'].ewm(span=period, adjust=False).mean()
+    logging.info(f"Computed {column_name}.")

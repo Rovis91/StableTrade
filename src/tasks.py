@@ -1,5 +1,5 @@
 from celery import Celery
-from src.backtest import backtest
+from src.backtest_engine import backtest
 from src.metrics import (
     calculate_sharpe_ratio,
     calculate_cumulative_return,

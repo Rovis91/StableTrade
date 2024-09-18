@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from src.backtest import backtest
+from src.backtest_engine import backtest
 
 def test_backtest():
     # Simulate test data
