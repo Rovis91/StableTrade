@@ -1,12 +1,23 @@
 from abc import ABC, abstractmethod
 import pandas as pd
-
-from src.portfolio import Portfolio
+import logging
 
 class Strategy(ABC):
     """
-    Abstract base class for all trading strategies.
+    Abstract base class for all trading strategies. Each strategy operates on a specific market (e.g., BTC/USD).
     """
+
+    def __init__(self, market: str, trade_manager):
+        """
+        Initialize the strategy.
+
+        Args:
+            market (str): The market this strategy operates on (e.g., BTC/USD).
+            trade_manager (TradeManager): The trade manager responsible for executing and managing trades.
+        """
+        self.market = market
+        self.trade_manager = trade_manager
+        self.logger = logging.getLogger(__name__)
 
     @abstractmethod
     def get_required_indicators(self) -> dict:
@@ -15,56 +26,41 @@ class Strategy(ABC):
 
         Returns:
             dict: A dictionary specifying indicators and their parameters.
-                  Example:
-                  {
-                      'SMA': [20, 50],  # Simple Moving Averages for 20 and 50 periods
-                      'EMA': [14],      # Exponential Moving Average for 14 periods
-                      ...
-                  }
-                  The keys should be the names of the indicators, and the values should be lists of required parameters.
         """
         pass
 
     @abstractmethod
-    def generate_signals(self, market_data: pd.Series) -> dict:
+    def generate_signals(self, market_data: pd.Series, active_trades: list) -> dict:
         """
-        Generate trading signals based on market data.
+        Generate trading signals based on market data and current active trades.
         
         Args:
             market_data (pd.Series): A row of market data (e.g., open, high, low, close, volume).
-                                     The series is expected to contain any required indicators as columns.
+            active_trades (list): A list of active trades to check before generating new signals.
         
         Returns:
-            dict: A dictionary containing the signals.
-                  Example:
-                  {
-                      'action': 'buy',  # 'buy', 'sell', or 'hold'
-                      'amount': 0.1,    # Amount to buy/sell
-                      'stop_loss': 0.95, # Optional stop loss level
-                      'take_profit': 1.05 # Optional take profit level
-                  }
-                  This dictionary must contain at least 'action' and 'amount' keys.
+            dict: A dictionary containing the trading signal with details such as:
+                  {'action': 'buy', 'amount': 0.1, 'asset_name': 'BTC/USD', 'price': 50000, 'stop_loss': 45000, 'take_profit': 55000}
         """
         pass
 
-    @abstractmethod
-    def on_order_execution(self, order: dict, portfolio: 'Portfolio'):
+    def log_signal(self, signal: dict):
         """
-        Handle actions to perform upon order execution (e.g., updating state, logging).
-
+        Helper function to log the generated signal.
+        
         Args:
-            order (dict): The order that was executed. 
-                          Expected keys:
-                          {
-                              'type': 'market',  # Order type
-                              'amount': 0.1,     # Executed amount
-                              'executed_price': 100.0, # Price at which the order was executed
-                              'timestamp': 1234567890.0 # Timestamp of the execution
-                          }
-            portfolio (Portfolio): The portfolio object to update after execution.
-
-        Notes:
-            This method is called after every successful order execution.
-            Implementations can use this hook to update strategy-specific state or metrics.
+            signal (dict): The signal dictionary to log.
         """
-        pass
+        if signal:
+            self.logger.info(f"Generated signal: {signal}")
+        else:
+            self.logger.info(f"No signal generated for {self.market} at this time.")
+
+    def log_indicator_error(self, indicator_name: str):
+        """
+        Helper function to log an error if a required indicator is missing or incorrect.
+        
+        Args:
+            indicator_name (str): The name of the missing or incorrect indicator.
+        """
+        self.logger.error(f"Required indicator '{indicator_name}' is missing or has invalid data for {self.market}.")

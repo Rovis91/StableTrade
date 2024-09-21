@@ -1,66 +1,112 @@
 import numpy as np
+import pandas as pd
 
-def calculate_sharpe_ratio(returns, risk_free_rate=0):
-    """
-    Calculates the Sharpe Ratio for a given strategy's returns.
-    
-    :param returns: Series of returns (can be daily, monthly, etc.)
-    :param risk_free_rate: Risk-free rate (defaults to 0)
-    :return: Sharpe Ratio
-    """
-    excess_returns = returns - risk_free_rate
-    return np.mean(excess_returns) / np.std(excess_returns) if np.std(excess_returns) != 0 else 0
+class Metrics:
+    def __init__(self, portfolio, trade_manager):
+        """
+        Initialize the Metrics class.
 
-def calculate_cumulative_return(initial_balance, final_balance):
-    """
-    Calculates the cumulative return over the entire backtest period.
-    
-    :param initial_balance: Initial account balance at the start of the backtest.
-    :param final_balance: Final account balance at the end of the backtest.
-    :return: Cumulative return as a percentage.
-    """
-    return (final_balance - initial_balance) / initial_balance
+        Args:
+            portfolio (Portfolio): The portfolio object to track.
+            trade_manager (TradeManager): The trade manager object to track trades.
+        """
+        self.portfolio = portfolio
+        self.trade_manager = trade_manager
 
-def calculate_max_drawdown(balance_series):
-    """
-    Calculates the maximum drawdown of the account balance during the backtest.
-    
-    :param balance_series: Series of account balances over time.
-    :return: Maximum drawdown as a percentage.
-    """
-    running_max = np.maximum.accumulate(balance_series)
-    drawdown = (running_max - balance_series) / running_max
-    return np.max(drawdown) if len(drawdown) > 0 else 0
+    def calculate_pnl(self, timestamp):
+        """
+        Calculate total profit and loss (PnL) for the portfolio at a specific timestamp.
 
-def calculate_profit_factor(trade_log):
-    """
-    Calculates the Profit Factor, which is the ratio of total profits to total losses.
-    
-    :param trade_log: A list of tuples representing trades, where each tuple contains ('BUY' or 'SELL', price).
-    :return: Profit factor (ratio of total profits to total losses).
-    """
-    total_profit = 0
-    total_loss = 0
-    
-    for trade in trade_log:
-        if trade[0] == 'SELL':  # We calculate profit/loss on sells (closing trades)
-            profit_or_loss = trade[2]  # This assumes profit or loss is tracked in the 3rd element of the tuple
-            if profit_or_loss > 0:
-                total_profit += profit_or_loss
-            else:
-                total_loss += abs(profit_or_loss)
+        Args:
+            timestamp (float): The timestamp for calculating the PnL.
 
-    if total_loss == 0:
-        return np.inf  # If no losses, profit factor is infinite.
-    
-    return total_profit / total_loss if total_loss > 0 else 0
+        Returns:
+            float: The total PnL.
+        """
+        portfolio_value = self.portfolio.get_portfolio_value(timestamp)
+        return portfolio_value - self.portfolio.initial_cash
 
-def calculate_total_trades(trade_log):
-    """
-    Calculates the total number of trades executed during the backtest.
-    
-    :param trade_log: A list of tuples representing trades, where each tuple contains ('BUY' or 'SELL', price).
-    :return: Total number of trades executed.
-    """
-    return len([trade for trade in trade_log if trade[0] in ('BUY', 'SELL')])
+    def calculate_sharpe_ratio(self, risk_free_rate=0.02):
+        """
+        Calculate the Sharpe ratio for the portfolio.
+
+        Args:
+            risk_free_rate (float): The risk-free rate of return. Default is 2%.
+
+        Returns:
+            float: The Sharpe ratio.
+        """
+        returns = self._get_portfolio_returns()
+        excess_returns = returns - risk_free_rate
+        return np.mean(excess_returns) / np.std(excess_returns) if np.std(excess_returns) != 0 else 0
+
+    def calculate_max_drawdown(self):
+        """
+        Calculate the maximum drawdown of the portfolio.
+
+        Returns:
+            float: The maximum drawdown.
+        """
+        portfolio_values = self.portfolio.get_portfolio_value_over_time()
+        peak = np.maximum.accumulate(portfolio_values)
+        drawdown = (portfolio_values - peak) / peak
+        return np.min(drawdown)
+
+    def calculate_win_loss_ratio(self):
+        """
+        Calculate the win/loss ratio for trades.
+
+        Returns:
+            float: The win/loss ratio.
+        """
+        closed_trades = self.trade_manager.get_trades(closed=True)
+        wins = closed_trades[closed_trades['exit_price'] > closed_trades['entry_price']].shape[0]
+        losses = closed_trades[closed_trades['exit_price'] <= closed_trades['entry_price']].shape[0]
+        return wins / losses if losses > 0 else float('inf')
+
+    def calculate_trade_duration(self):
+        """
+        Calculate the average duration of trades.
+
+        Returns:
+            float: The average trade duration in seconds.
+        """
+        closed_trades = self.trade_manager.get_trades(closed=True)
+        durations = closed_trades['exit_timestamp'] - closed_trades['entry_timestamp']
+        return durations.mean() if not durations.empty else 0
+
+    def calculate_average_return_per_trade(self):
+        """
+        Calculate the average return per trade.
+
+        Returns:
+            float: The average return per trade.
+        """
+        closed_trades = self.trade_manager.get_trades(closed=True)
+        returns = (closed_trades['exit_price'] - closed_trades['entry_price']) * closed_trades['amount']
+        return returns.mean() if not returns.empty else 0
+
+    def calculate_total_return(self, timestamp):
+        """
+        Calculate the total return of the portfolio.
+
+        Args:
+            timestamp (float): The timestamp for calculating total return.
+
+        Returns:
+            float: The total return as a percentage.
+        """
+        initial_cash = self.portfolio.initial_cash
+        final_value = self.portfolio.get_portfolio_value(timestamp)
+        return (final_value - initial_cash) / initial_cash * 100
+
+    def _get_portfolio_returns(self):
+        """
+        Get the portfolio returns over time.
+
+        Returns:
+            np.array: Array of portfolio returns.
+        """
+        portfolio_values = self.portfolio.get_portfolio_value_over_time()
+        return np.diff(portfolio_values) / portfolio_values[:-1] if len(portfolio_values) > 1 else np.array([])
 

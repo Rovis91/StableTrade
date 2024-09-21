@@ -1,101 +1,164 @@
 import logging
 
 class Portfolio:
-    def __init__(self, initial_cash: float):
-        self.cash_balance = initial_cash
-        self.holdings = {}  # Dictionary to hold asset quantities
-
-    def update(self, executed_order):
+    def __init__(self, initial_cash: float, trade_manager, fees: dict):
         """
-        Updates the portfolio based on an executed order.
+        Initialize the portfolio with the given initial cash balance and fees.
 
         Args:
-            executed_order (dict): The order that was executed.
+            initial_cash (float): Starting cash balance.
+            trade_manager (TradeManager): An instance of the TradeManager class.
+            fees (dict): A dictionary with asset names as keys and their entry/exit fees as values.
+                         e.g., {'EUTEUR': {'entry': 0.001, 'exit': 0.001}}
         """
-        order_type = executed_order['type']
-        asset_name = executed_order.get('asset_name', 'asset')  # Default to 'asset' if not specified
-        amount = executed_order['amount']
-        executed_price = executed_order['executed_price']
+        self.holdings = {'cash': initial_cash}
+        self.history = []
+        self.trade_manager = trade_manager
+        self.fees = fees 
+        self.logger = logging.getLogger(__name__)
 
-        if order_type == 'market':
-            # Validate the trade before execution
-            if not self._validate_trade(asset_name, amount, executed_price):
-                logging.error(f"Trade validation failed for order: {executed_order}")
-                return
-            
-            # Execute the trade
-            self._execute_trade(asset_name, amount, executed_price)
-
-    def _validate_trade(self, asset_name, amount, executed_price):
+    def process_signals(self, signals: list, market_prices: dict, timestamp: int):
         """
-        Validates if the trade can be executed.
+        Process a batch of signals, validate them, and execute trades if possible.
+        """
+        validated_signals = []
+
+        # Validate all signals (buy and sell)
+        for signal in signals:
+            if self.validate_signal(signal):
+                validated_signals.append(signal)
+            else:
+                self.logger.warning(f"Signal validation failed for signal: {signal}")
+
+        # Execute validated trades via TradeManager
+        for signal in validated_signals:
+            self.logger.info(f"Executing trade for signal: {signal}")
+            self._execute_trade(signal, market_prices, timestamp)
+
+        # Log the updated portfolio state after processing the signals
+        self._log_portfolio_state(timestamp)
+
+
+    def validate_signal(self, signal: dict) -> bool:
+        """
+        Validates whether a trade can be executed based on available cash or assets.
 
         Args:
-            asset_name (str): The name of the asset.
-            amount (float): The amount to trade.
-            executed_price (float): The price at which the trade is executed.
+            signal (dict): The signal to validate. Should include 'action', 'amount', 'price', 'asset_name', and optional 'fees'.
 
         Returns:
-            bool: True if the trade is valid, False otherwise.
+            bool: True if the signal can be executed, False otherwise.
         """
-        if amount > 0:  # Buy order
-            total_cost = amount * executed_price
-            if total_cost > self.cash_balance:
-                logging.warning("Insufficient cash to execute buy order.")
-                return False
-        elif amount < 0:  # Sell order
-            if asset_name not in self.holdings or abs(amount) > self.holdings[asset_name]:
-                logging.warning("Insufficient holdings to execute sell order.")
-                return False
-        return True
+        # Ensure all necessary fields are present
+        required_fields = ['action', 'amount', 'asset_name', 'price']
+        if not all(field in signal for field in required_fields):
+            logging.error(f"Signal is missing required fields: {signal}")
+            return False
 
-    def _execute_trade(self, asset_name, amount, executed_price):
+        action = signal['action']
+        amount = signal['amount']
+        asset = signal['asset_name']
+        price = signal['price']
+        entry_fee = self.get_fee(asset, 'entry')
+
+        total_cost = amount * price
+
+        if action == 'buy':
+            # Validate cash availability for buy orders
+            if self.holdings.get('cash', 0) >= (total_cost + entry_fee):
+                return True
+            else:
+                logging.warning(f"Not enough cash to buy {amount} of {asset} at {price}. Required: {total_cost + entry_fee}, Available: {self.holdings.get('cash', 0)}")
+        elif action == 'sell':
+            # Validate asset availability for sell orders
+            if asset in self.holdings and self.holdings[asset] >= amount:
+                return True
+            else:
+                logging.warning(f"Not enough {asset} to sell. Required: {amount}, Available: {self.holdings.get(asset, 0)}")
+        
+        return False
+
+    def _execute_trade(self, signal: dict, market_prices: dict, timestamp: int):
         """
-        Executes a trade by updating the cash balance and holdings.
+        Execute a validated trade and update holdings.
 
         Args:
-            asset_name (str): The name of the asset.
-            amount (float): The amount to trade.
-            executed_price (float): The price at which the trade is executed.
+            signal (dict): The validated trade signal.
+            market_prices (dict): Current market prices of assets.
+            timestamp (int): The timestamp of trade execution.
         """
-        if amount > 0:  # Buy order
-            total_cost = amount * executed_price
-            self.cash_balance -= total_cost
-            self._add_to_holdings(asset_name, amount)
-        elif amount < 0:  # Sell order
-            total_sale = abs(amount) * executed_price
-            self.cash_balance += total_sale
-            self._remove_from_holdings(asset_name, abs(amount))
+        asset_name = signal['asset_name']
+        amount = signal['amount']
+        entry_price = market_prices[asset_name]
+        entry_fee = self.get_fee(asset_name, 'entry')
+        stop_loss = signal.get('stop_loss')
+        take_profit = signal.get('take_profit')
+        trailing_stop = signal.get('trailing_stop')
+        entry_reason = signal.get('reason', 'buy_signal')
 
-    def _add_to_holdings(self, asset_name, amount):
+        # Log the trade details
+        logging.info(f"Executing trade: {signal}")
+
+        # Open the trade using TradeManager
+        trade = self.trade_manager.open_trade(
+            asset_name=asset_name,
+            amount=amount,
+            entry_price=entry_price,
+            entry_timestamp=timestamp,
+            entry_fee=entry_fee,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            trailing_stop=trailing_stop,
+            entry_reason=entry_reason
+        )
+
+        # Update the portfolio holdings and cash
+        self.update_holdings(trade)
+
+    def update_holdings(self, trade: dict):
         """
-        Adds the asset to holdings.
+        Updates portfolio holdings and cash after a trade is executed.
 
         Args:
-            asset_name (str): The name of the asset.
-            amount (float): The amount to add to the holdings.
+            trade (dict): The trade details (from TradeManager). Includes 'asset_name', 'amount', 'price', 'fees', etc.
         """
-        if asset_name in self.holdings:
-            self.holdings[asset_name] += amount
+        asset = trade['asset_name']
+        amount = trade['amount']
+        price = trade['entry_price']
+        entry_fee = trade.get('entry_fee', 0)
+
+        total_cost = amount * price
+
+        if trade['status'] == 'closed':
+            # This is a sell trade
+            exit_fee = self.get_fee(asset, 'exit')
+            self.holdings['cash'] += (total_cost - exit_fee)  # Add to cash after fees
+            self.holdings[asset] -= amount  # Reduce asset quantity
+            if self.holdings[asset] == 0:
+                del self.holdings[asset]  # Remove asset from holdings if quantity is 0
+            logging.info(f"Updated holdings after selling {amount} of {asset}. New cash balance: {self.holdings['cash']}")
         else:
-            self.holdings[asset_name] = amount
+            # This is a buy trade
+            self.holdings['cash'] -= (total_cost + entry_fee)  # Deduct cash
+            self.holdings[asset] = self.holdings.get(asset, 0) + amount  # Add to holdings
+            logging.info(f"Updated holdings after buying {amount} of {asset}. New cash balance: {self.holdings['cash']}")
 
-    def _remove_from_holdings(self, asset_name, amount):
+    def _log_portfolio_state(self, timestamp: int):
         """
-        Removes the asset from holdings.
+        Logs the current portfolio state (cash + asset quantities) at a specific timestamp.
 
         Args:
-            asset_name (str): The name of the asset.
-            amount (float): The amount to remove from the holdings.
+            timestamp (int): The timestamp of the portfolio update.
         """
-        if asset_name in self.holdings:
-            self.holdings[asset_name] -= amount
-            if self.holdings[asset_name] <= 0:
-                del self.holdings[asset_name]  # Remove the asset if amount becomes zero or negative
+        self.history.append({
+            'timestamp': timestamp,
+            'holdings': self.holdings.copy()  # Store a snapshot of the current holdings
+        })
+        logging.info(f"Portfolio state at {timestamp}: {self.holdings}")
 
-    def get_portfolio_value(self, market_prices: dict):
+    def get_total_value(self, market_prices: dict):
         """
-        Calculates the current portfolio value.
+        Calculates the total value of the portfolio (cash + current asset values).
 
         Args:
             market_prices (dict): Dictionary of current prices for each asset.
@@ -103,23 +166,41 @@ class Portfolio:
         Returns:
             float: The total portfolio value.
         """
-        total_value = self.cash_balance
+        total_value = self.holdings.get('cash', 0)
+
         for asset, quantity in self.holdings.items():
-            if asset in market_prices:
-                total_value += market_prices[asset] * quantity
+            if asset != 'cash' and asset in market_prices:
+                total_value += quantity * market_prices[asset]
 
         return total_value
 
-    def get_pnl(self, initial_cash: float, market_prices: dict):
+    def get_holdings(self):
         """
-        Calculates the profit and loss (PnL) of the portfolio.
-
-        Args:
-            initial_cash (float): The initial cash to calculate PnL.
-            market_prices (dict): Dictionary of current prices for each asset.
+        Get a snapshot of the current holdings including cash.
 
         Returns:
-            float: The PnL value.
+            dict: A dictionary of holdings {'cash': 1000, 'BTC': 2.0, ...}
         """
-        current_value = self.get_portfolio_value(market_prices)
-        return current_value - initial_cash
+        return self.holdings.copy()
+
+    def log_portfolio(self):
+        """
+        Returns the historical portfolio log for analysis.
+
+        Returns:
+            list: The list of portfolio states over time [{'timestamp': 12345, 'holdings': {...}}, ...]
+        """
+        return self.history
+    
+    def get_fee(self, asset_name, fee_type='entry'):
+        """
+        Get the fee for the specified asset.
+
+        Args:
+            asset_name (str): The asset being traded (e.g., 'EUTEUR').
+            fee_type (str): Either 'entry' or 'exit'.
+
+        Returns:
+            float: The fee percentage for the given asset and type.
+        """
+        return self.fees.get(asset_name, {}).get(fee_type, 0.0)

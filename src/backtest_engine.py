@@ -1,223 +1,157 @@
-from src.logger import setup_logger
-from src.data_loader import DataLoader
+import logging
+import pandas as pd
 from src.data_preprocessor import DataPreprocessor
-from src.execution_model import ExecutionModel
-from src.portfolio import Portfolio
-
-# Create a logger for this module
-logger = setup_logger(__name__)
 
 class BacktestEngine:
-    def __init__(self, data_path: str, output_path: str, strategy, execution_model: ExecutionModel, portfolio: Portfolio, preprocess_data: bool = True):
+    def __init__(self, assets, strategies, portfolio, trade_manager, slippage=0.0, latency=0):
         """
         Initialize the backtest engine.
 
         Args:
-            data_path (str): Path to the input data file.
-            output_path (str): Path to save the processed data file.
-            strategy: Strategy object implementing the trading strategy.
-            execution_model (ExecutionModel): Execution model for placing and managing orders.
-            portfolio (Portfolio): Portfolio object for managing positions.
-            preprocess_data (bool): Whether to preprocess data before backtesting.
+            assets (dict): A dictionary of asset names and their corresponding CSV file paths.
+            strategies (dict): A dictionary of asset names and their corresponding strategy instances.
+            portfolio (Portfolio): Portfolio instance for managing capital and trades.
+            trade_manager (TradeManager): TradeManager instance to execute trades.
+            slippage (float): Slippage to be applied to trades.
+            latency (int): Simulated latency in milliseconds.
         """
-        self.data_path = data_path
-        self.output_path = output_path
-        self.strategy = strategy
-        self.execution_model = execution_model
+        self.assets = assets
+        self.strategies = strategies
         self.portfolio = portfolio
-        self.data = None
-        self.preprocess_data = preprocess_data
-        self.initial_cash = portfolio.cash_balance
+        self.trade_manager = trade_manager
+        self.slippage = slippage
+        self.latency = latency
+        self.market_data = {}
+        self.unified_timestamps = []
+        self.logger = logging.getLogger(__name__)
+    
+    def preprocess_data(self):
+        """Preprocess the data for all assets and prepare the unified timestamp list."""
+        self.logger.info("Preprocessing data for all assets...")
 
-        # Validate input parameters
-        self._validate_parameters()
+        for asset_name, csv_path in self.assets.items():
+            strategy = self.strategies[asset_name]
+            required_indicators = strategy.get_required_indicators()
 
-    def _validate_parameters(self):
-        """
-        Validate input parameters to ensure they are correctly set.
-        """
-        if not isinstance(self.data_path, str) or not isinstance(self.output_path, str):
-            raise ValueError("data_path and output_path must be strings.")
-        if not hasattr(self.strategy, 'generate_signals'):
-            raise ValueError("Strategy must have a 'generate_signals' method.")
-        if not isinstance(self.execution_model, ExecutionModel):
-            raise ValueError("execution_model must be an instance of ExecutionModel.")
-        if not isinstance(self.portfolio, Portfolio):
-            raise ValueError("portfolio must be an instance of Portfolio.")
+            # Initialize the DataPreprocessor with the input CSV path
+            preprocessor = DataPreprocessor(csv_path)
 
-    def run(self):
-        """
-        Run the backtest.
-        """
-        logger.info("Starting backtest...")
-        if self.preprocess_data:
-            self._preprocess_data()
-        self._load_data()
+            # Preprocess data (this will load existing data if indicators match)
+            try:
+                data = preprocessor.preprocess_data(required_indicators)
+                self.market_data[asset_name] = data
+                self.logger.info(f"Data preprocessed for asset: {asset_name}")
+            except Exception as e:
+                self.logger.error(f"Error preprocessing data for {asset_name}: {e}")
+
+        # Create unified timestamp list based on all assets
+        self.unified_timestamps = sorted(set(ts for asset in self.market_data.values() for ts in asset.index))
+        self.logger.info(f"Unified timestamps generated with {len(self.unified_timestamps)} entries.")
+
+    def run_backtest(self):
+        """Run the backtest on all assets, processing each timestamp sequentially."""
+        self.logger.info("Starting backtest...")
+
+        for timestamp in self.unified_timestamps:
+            # self.logger.debug(f"Processing timestamp: {timestamp}")
+
+            for asset_name, data in self.market_data.items():
+                if timestamp in data.index:
+                    row_data = data.loc[timestamp]
+                    strategy = self.strategies[asset_name]
+
+                    # Get active trades for this asset
+                    active_trades = self.trade_manager.get_trade(status='open')
+
+                    # Execute the strategy to generate signals
+                    signals = strategy.generate_signals(row_data, active_trades)
+
+                    # Log generated signals
+                    if signals:
+                        self.logger.info(f"Generated signals at {timestamp} for {asset_name}: {signals}")
+                    
+                    # Update trailing stop before checking stop loss or take profit
+                    self._update_trailing_stops(asset_name, row_data['close'])
+
+                    # Check stop-loss and take-profit for active trades
+                    self._check_stop_loss_take_profit(asset_name, row_data['close'], timestamp)
+
+                    # Pass signals to portfolio for validation and execution
+                    self.portfolio.process_signals(signals=signals, market_prices={asset_name: row_data['close']}, timestamp=timestamp)
+
+        # Log final summary after the backtest
+        self.log_final_summary()
+
+    def log_final_summary(self):
+        """Log a final summary of trades after the backtest completes."""
+        all_trades = self.trade_manager.get_trade()
+        open_trades = self.trade_manager.get_trade(status='open')
+        closed_trades = self.trade_manager.get_trade(status='closed')
+
+        self.logger.info("Backtest completed.")
+        self.logger.info(f"Total trades executed: {len(all_trades)}")
+        self.logger.info(f"Open trades: {len(open_trades)}")
+        self.logger.info(f"Closed trades: {len(closed_trades)}")
+
+        if open_trades:
+            self.logger.info(f"Open trades details: {open_trades}")
         
-        if self.data is None or self.data.empty or not self._verify_data_format(self.data):
-            logger.error("Data is empty, not loaded, or incorrectly formatted. Aborting backtest.")
-            return
+        if closed_trades:
+            self.logger.info(f"Closed trades details: {closed_trades}")
 
-        self._execute_backtest()
-        self._finalize_backtest()
+    def _update_trailing_stops(self, asset_name, current_price):
+        """Update trailing stop for open trades."""
+        for trade in self.trade_manager.get_trade(status='open'):
+            if trade['asset_name'] == asset_name and trade['trailing_stop'] is not None:
+                # For long trades, adjust trailing stop only if the current price is higher
+                if trade['amount'] > 0:
+                    new_stop_loss = max(trade['stop_loss'], current_price * (1 - trade['trailing_stop'] / 100))
+                    self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
+                
+                # For short trades, adjust trailing stop only if the current price is lower
+                if trade['amount'] < 0:
+                    new_stop_loss = min(trade['stop_loss'], current_price * (1 + trade['trailing_stop'] / 100))
+                    self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
 
-    def _preprocess_data(self):
+    def _check_stop_loss_take_profit(self, asset_name, current_price, timestamp):
         """
-        Preprocess data by calculating required indicators.
-        """
-        logger.info("Preprocessing data for strategy...")
-        required_indicators = self.strategy.get_required_indicators()
-        preprocessor = DataPreprocessor(self.data_path, self.output_path)
-        preprocessor.preprocess_data(required_indicators)
-
-    def _load_data(self):
-        """
-        Load data from the output path.
-        """
-        try:
-            logger.info("Loading enriched data...")
-            data_loader = DataLoader(self.output_path)
-            self.data = data_loader.load_data()
-            logger.info(f"Data loaded. Total records: {len(self.data)}")
-        except Exception as e:
-            logger.error(f"Failed to load data: {e}")
-            self.data = None
-
-    def _verify_data_format(self, data):
-        """
-        Verify the data format to ensure it contains the necessary columns.
-        
-        Args:
-            data (pd.DataFrame): The DataFrame containing market data.
-
-        Returns:
-            bool: True if the data format is correct, False otherwise.
-        """
-        required_columns = ['close']
-        if not all(column in data.columns for column in required_columns):
-            logger.error(f"Data is missing required columns: {', '.join(required_columns)}")
-            return False
-        return True
-
-    def _execute_backtest(self):
-        """
-        Execute the backtest by processing market events.
-        """
-        logger.info("Executing backtest...")
-        
-        # Precompute strategy signals for the entire dataset (vectorized operations)
-        self.data['signals'] = self.data.apply(self._generate_signals_vectorized, axis=1)
-        
-        # Iterate through precomputed signals
-        for timestamp, row in self.data.iterrows():
-            self._process_market_event(timestamp, row)
-
-    def _generate_signals_vectorized(self, market_data):
-        """
-        Precompute strategy signals for each row of the dataset.
-        """
-        return self.strategy.generate_signals(market_data)
-
-    def _process_market_event(self, timestamp, market_data):
-        """
-        Process a single market event, executing trades and setting stop orders.
-        
-        Args:
-            timestamp: The timestamp of the market event.
-            market_data: The market data for the event.
-        """
-        logger.debug(f"Processing market event at {timestamp}")
-
-        current_price = market_data['close']
-        signals = market_data['signals']
-
-        action = signals.get('action')
-        amount = signals.get('amount', 0)
-        stop_loss = signals.get('stop_loss')
-        take_profit = signals.get('take_profit')
-        trailing_stop = signals.get('trailing_stop')
-
-        try:
-            if action in ['buy', 'sell']:
-                self._place_market_order(action, amount, current_price, timestamp)
-                self._set_stop_orders(action, amount, current_price, stop_loss, take_profit, trailing_stop, timestamp)
-            
-            self._match_orders(current_price)
-            self._log_portfolio_status(current_price)
-        
-        except Exception as e:
-            logger.error(f"Error processing market event at {timestamp}: {e}")
-
-    def _place_market_order(self, action, amount, current_price, timestamp):
-        """
-        Place a market order and update the portfolio.
+        Check stop loss and take profit conditions for open trades and close them if conditions are met.
         
         Args:
-            action (str): The type of action ('buy' or 'sell').
-            amount (float): The amount to trade.
-            current_price (float): The current market price.
-            timestamp: The timestamp of the market event.
+            asset_name (str): The asset being processed (e.g., 'BTCUSD').
+            current_price (float): The current market price of the asset.
+            timestamp (int): The current timestamp being processed.
         """
-        order_type = 'market'
-        executed_order = self.execution_model.place_order(order_type, amount, current_price=current_price, timestamp=timestamp)
-        logger.info(f"Order executed: {executed_order}")
-        
-        if executed_order is not None:
-            self.portfolio.update(executed_order)
-        else:
-            logger.warning(f"Failed to execute {action} order.")
+        for trade in self.trade_manager.get_trade(status='open'):
+            if trade['asset_name'] == asset_name:
+                # Check stop loss
+                if trade['stop_loss'] is not None and current_price <= trade['stop_loss']:
+                    self._trigger_stop_loss(trade, current_price, timestamp)
+                
+                # Check take profit
+                if trade['take_profit'] is not None and current_price >= trade['take_profit']:
+                    self._trigger_take_profit(trade, current_price, timestamp)
 
-    def _set_stop_orders(self, action, amount, current_price, stop_loss, take_profit, trailing_stop, timestamp):
-        """
-        Place stop-loss, take-profit, and trailing stop orders.
-        
-        Args:
-            action (str): The type of action ('buy' or 'sell').
-            amount (float): The amount to trade.
-            current_price (float): The current market price.
-            stop_loss (float or None): The stop-loss percentage.
-            take_profit (float or None): The take-profit percentage.
-            trailing_stop (float or None): The trailing stop percentage.
-            timestamp: The timestamp of the market event.
-        """
-        try:
-            if stop_loss is not None:
-                stop_price = current_price * (1 - stop_loss) if action == 'buy' else current_price * (1 + stop_loss)
-                self.execution_model.place_order('stop', -amount, stop_price=stop_price, timestamp=timestamp)
+    def _trigger_stop_loss(self, trade, current_price, timestamp):
+        """Trigger stop loss and close the trade."""
+        self.logger.info(f"Stop loss triggered for trade {trade['id']} at {timestamp}.")
+        exit_fee = self.portfolio.get_fee(trade['asset_name'], 'exit')
+        self.trade_manager.close_trade(
+            trade_id=trade['id'],
+            exit_price=current_price,
+            exit_timestamp=timestamp,
+            exit_fee=exit_fee,
+            exit_reason="stop_loss"
+        )
 
-            if take_profit is not None:
-                take_profit_price = current_price * (1 + take_profit) if action == 'buy' else current_price * (1 - take_profit)
-                self.execution_model.place_order('stop', -amount, stop_price=take_profit_price, timestamp=timestamp)
-
-            if trailing_stop is not None:
-                self.execution_model.place_order('trailing_stop', -amount, trailing_amount=trailing_stop, current_price=current_price, timestamp=timestamp)
-
-        except Exception as e:
-            logger.error(f"Error setting stop orders: {e}")
-
-    def _match_orders(self, current_price):
-        """
-        Match all active orders against the current market price.
-        """
-        self.execution_model.match_limit_orders(current_price)
-        self.execution_model.match_stop_orders(current_price)
-        self.execution_model.match_trailing_stop_orders(current_price)
-        self.execution_model.remove_executed_orders()
-
-    def _log_portfolio_status(self, current_price):
-        """
-        Log the current portfolio value and P&L.
-        """
-        portfolio_value = self.portfolio.get_portfolio_value({'asset': current_price})
-        pnl = self.portfolio.get_pnl(self.initial_cash, {'asset': current_price})
-        logger.info(f"Portfolio Value: {portfolio_value:.2f}, P&L: {pnl:.2f}")
-
-    def _finalize_backtest(self):
-        """
-        Finalize the backtest and log the results.
-        """
-        logger.info("Finalizing backtest...")
-        final_value = self.portfolio.get_portfolio_value({'asset': self.data.iloc[-1]['close']})
-        final_pnl = self.portfolio.get_pnl(self.initial_cash, {'asset': self.data.iloc[-1]['close']})
-        logger.info(f"Final Portfolio Value: {final_value:.2f}")
-        logger.info(f"Total P&L: {final_pnl:.2f}")
+    def _trigger_take_profit(self, trade, current_price, timestamp):
+        """Trigger take profit and close the trade."""
+        self.logger.info(f"Take profit triggered for trade {trade['id']} at {timestamp}.")
+        exit_fee = self.portfolio.get_fee(trade['asset_name'], 'exit')
+        self.trade_manager.close_trade(
+            trade_id=trade['id'],
+            exit_price=current_price,
+            exit_timestamp=timestamp,
+            exit_fee=exit_fee,
+            exit_reason="take_profit"
+        )
