@@ -28,6 +28,7 @@ data/*.json
 # Strategy files
 context.md
 risk.md
+features.md
 
 # Other
 test.py

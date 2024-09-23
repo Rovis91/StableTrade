@@ -62,35 +62,36 @@ class BacktestEngine:
 
         for timestamp in self.unified_timestamps:
             signals = []
+            self.logger.debug(f"Processing timestamp {timestamp}")
 
             for asset_name, data in self.market_data.items():
                 if timestamp in data.index:
                     row_data = data.loc[timestamp]
                     strategy = self.strategies[asset_name]
 
-                    # Get active trades for this asset
+                    # Log the active trades for this asset before processing
                     active_trades = self.trade_manager.get_trade(status='open')
+                    self.logger.debug(f"Active trades for {asset_name} at timestamp {timestamp}: {active_trades}")
 
-                    # Update trailing stop before checking stop loss or take profit
+                    # Update trailing stops if necessary
                     self._update_trailing_stops(asset_name, row_data['close'])
 
-                    # Check stop-loss and take-profit for active trades
+                    # Check stop-loss and take-profit conditions
                     self._check_stop_loss_take_profit(asset_name, row_data['close'], timestamp)
 
                     # Execute the strategy to generate signals
                     signal = strategy.generate_signal(row_data, active_trades)
+                    self.logger.debug(f"Signal generated for {asset_name}: {signal}")
 
-                    # Append signal to the list of signals if not empty
                     if signal:
                         signals.append(signal)
 
-            # Only process signals and trigger the portfolio if there are signals
+            # Process signals only if available
             if signals:
-                self.logger.debug(f"Generated signals at {timestamp}: {signals}")
-                # Pass signals to portfolio for validation and execution
+                self.logger.debug(f"Processing signals at {timestamp}: {signals}")
                 self.portfolio.process_signals(signals=signals, market_prices={asset_name: row_data['close']}, timestamp=timestamp)
 
-        # Log final summary after the backtest
+        # Log final summary after backtest
         self.log_final_summary()
 
     def log_final_summary(self):
@@ -109,7 +110,11 @@ class BacktestEngine:
         total_holding_time = 0
 
         for trade in all_trades:
-            profit = (trade['exit_price'] - trade['entry_price']) * trade['amount'] - trade['entry_fee'] - trade['exit_fee']
+            market_type = trade.get('market_type', 'spot')  # Default to 'spot' if not set
+            leverage = trade.get('leverage', 1) if market_type == 'futures' else 1  # Apply leverage for futures
+
+            # Apply slippage and adjust profit calculations
+            profit = ((trade['exit_price'] - trade['entry_price']) * trade['amount'] * leverage) - trade['entry_fee'] - trade['exit_fee']
             total_profit += profit
 
             if profit > 0:
@@ -138,36 +143,45 @@ class BacktestEngine:
 
     def _update_trailing_stops(self, asset_name, current_price):
         """Update trailing stop for open trades."""
+        self.logger.debug(f"Updating trailing stops for {asset_name} with current price: {current_price}")
+
         for trade in self.trade_manager.get_trade(status='open'):
+            market_type = trade.get('market_type', 'spot')
+
             if trade['asset_name'] == asset_name and trade['trailing_stop'] is not None:
-                # For long trades, adjust trailing stop only if the current price is higher
-                if trade['amount'] > 0:
-                    new_stop_loss = max(trade['stop_loss'], current_price * (1 - trade['trailing_stop'] / 100))
-                    self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
+                previous_stop = trade['stop_loss']
                 
-                # For short trades, adjust trailing stop only if the current price is lower
-                if trade['amount'] < 0:
+                # For long trades or buy trades, adjust trailing stop only if the current price is higher
+                if (market_type == 'futures' and trade['direction'] == 'long') or (market_type == 'spot' and trade['direction'] == 'buy'):
+                    new_stop_loss = max(trade['stop_loss'], current_price * (1 - trade['trailing_stop'] / 100))
+                # For short trades or sell trades, adjust trailing stop only if the current price is lower
+                elif (market_type == 'futures' and trade['direction'] == 'short') or (market_type == 'spot' and trade['direction'] == 'sell'):
                     new_stop_loss = min(trade['stop_loss'], current_price * (1 + trade['trailing_stop'] / 100))
+                else:
+                    self.logger.debug(f"No update required for trailing stop on trade {trade['id']}.")
+
+                if new_stop_loss != previous_stop:
                     self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
+                    self.logger.debug(f"Trailing stop updated for trade {trade['id']} from {previous_stop} to {new_stop_loss}")
+                else:
+                    self.logger.debug(f"No change in trailing stop for trade {trade['id']}, remains at {previous_stop}")
+
 
     def _check_stop_loss_take_profit(self, asset_name, current_price, timestamp):
         """
         Check stop loss and take profit conditions for open trades and close them if conditions are met.
-        
-        Args:
-            asset_name (str): The asset being processed (e.g., 'BTCUSD').
-            current_price (float): The current market price of the asset.
-            timestamp (int): The current timestamp being processed.
         """
         for trade in self.trade_manager.get_trade(status='open'):
             if trade['asset_name'] == asset_name:
                 # Check stop loss
                 if trade['stop_loss'] is not None and current_price <= trade['stop_loss']:
                     self._trigger_stop_loss(trade, current_price, timestamp)
-                
+
                 # Check take profit
                 if trade['take_profit'] is not None and current_price >= trade['take_profit']:
                     self._trigger_take_profit(trade, current_price, timestamp)
+
+                self.logger.debug(f"Stop-loss/take-profit checked for trade {trade['id']} at {timestamp}")
 
     def _trigger_stop_loss(self, trade, current_price, timestamp):
         """Trigger stop loss and close the trade."""

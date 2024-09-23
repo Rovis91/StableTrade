@@ -34,14 +34,6 @@ def main():
     # Setup logging
     logger = setup_logging()
 
-    # Initialize portfolio and trade manager with fees for each asset
-    initial_cash = 100000  # Example initial cash
-    fees = {
-        'EUTEUR': {'entry': 0.001, 'exit': 0.001}  # 0.1% entry and exit fees for EUTEUR
-    }
-    trade_manager = TradeManager()
-    portfolio = Portfolio(initial_cash=initial_cash, trade_manager=trade_manager, fees=fees)
-
     # Define the asset and its corresponding CSV data paths (for preprocessing and preprocessed data)
     assets = {
         'EUTEUR': 'D:\\StableTrade_dataset\\EUTEUR_1m\\EUTEUR_1m_final_merged.csv'
@@ -52,27 +44,42 @@ def main():
         logger.error("File verification failed. Exiting the process.")
         return
 
-    # Initialize strategies for the asset
+    # Initialize trade manager
+    trade_manager = TradeManager()
+
+    # Initialize strategies for the assets
     strategies = {
         'EUTEUR': DepegStrategy(
-            market='EUTEUR', 
-            trade_manager=trade_manager, 
-            depeg_threshold=5, 
-            trade_amount=0.1, 
-            stop_loss=None, 
-            take_profit=None, 
+            market='EUTEUR',
+            trade_manager=trade_manager,
+            depeg_threshold=5,
+            trade_amount=0.1,
+            stop_loss=None,
+            take_profit=None,
             trailing_stop=None
         )
     }
 
+    # Corrected portfolio config generation to match the strategy implementation
+    p_config = {}
+    for asset_name, strategy in strategies.items():
+        p_config[asset_name] = {
+            'market_type': strategy.config['market_type'],  # Access market_type from config
+            'fees': strategy.config['fees']  # Access fees from config
+        }
+
+    # Initialize portfolio with the gathered configuration
+    initial_cash = 100000  # Example initial cash
+    portfolio = Portfolio(initial_cash=initial_cash, trade_manager=trade_manager, portfolio_config=p_config)
+
     # Initialize the backtest engine
     backtest_engine = BacktestEngine(
-        assets=assets, 
-        strategies=strategies, 
-        portfolio=portfolio, 
+        assets=assets,
+        strategies=strategies,
+        portfolio=portfolio,
         trade_manager=trade_manager
     )
-    
+
     try:
         # Preprocess the data
         logger.info("Starting data preprocessing...")
