@@ -25,9 +25,9 @@ class DepegStrategy(Strategy):
         
         self.depeg_threshold = depeg_threshold
         self.trade_amount = trade_amount
-        self.stop_loss = stop_loss
-        self.take_profit = take_profit
-        self.trailing_stop = trailing_stop
+        self.stop_loss_percent = stop_loss  # Store percentages
+        self.take_profit_percent = take_profit  # Store percentages
+        self.trailing_stop_percent = trailing_stop  # Store percentages
         self.logger = logging.getLogger(__name__)
 
     def get_required_indicators(self) -> dict:
@@ -39,7 +39,7 @@ class DepegStrategy(Strategy):
         """
         return {'SMA': [20, 50]}  # Example: Use two Simple Moving Averages (SMA_20 and SMA_50)
 
-    def generate_signals(self, market_data: pd.Series, active_trades: list) -> dict:
+    def generate_signal(self, market_data: pd.Series, active_trades: list) -> dict:
         """
         Generate trading signals based on the current market data and active trades.
 
@@ -53,45 +53,27 @@ class DepegStrategy(Strategy):
         # Use precomputed indicators (e.g., SMA_20 and SMA_50)
         sma_20 = market_data['SMA_20']
         sma_50 = market_data['SMA_50']
+        current_price = market_data['close']
 
         # Compute the deviation from SMA_20
-        deviation = (market_data['close'] - sma_20) / sma_20 * 100
+        deviation = (current_price - sma_20) / sma_20 * 100
 
         # Buy condition: price significantly below SMA_20 by the threshold (depeg event)
         if deviation <= -self.depeg_threshold:
-            self.logger.info(f"buy condition met ")
+            self.logger.debug("Buy condition met")  # Use debug for frequent logs
+
+            # Calculate stop loss and take profit prices based on the current price
+            stop_loss_price = current_price * (1 - self.stop_loss_percent) if self.stop_loss_percent is not None else None
+            take_profit_price = current_price * (1 + self.take_profit_percent) if self.take_profit_percent is not None else None
+
             return {
                 'action': 'buy',
                 'amount': self.trade_amount,
                 'asset_name': self.market,
-                'price': market_data['close'],
-                'stop_loss': self.stop_loss if self.stop_loss is not None else None,
-                'take_profit': self.take_profit if self.take_profit is not None else None,
-                'trailing_stop': self.trailing_stop if self.trailing_stop is not None else None
+                'price': current_price,
+                'stop_loss': None,  
+                'take_profit': sma_20,  
+                'trailing_stop': None
             }
 
-        # Sell condition: price significantly above SMA_50 by the threshold (repeg event)
-        elif deviation >= self.depeg_threshold:
-            return {
-                'action': 'sell',
-                'amount': self.trade_amount,
-                'asset_name': self.market,
-                'price': market_data['close'],
-                'stop_loss': self.stop_loss if self.stop_loss is not None else None,
-                'take_profit': self.take_profit if self.take_profit is not None else None,
-                'trailing_stop': self.trailing_stop if self.trailing_stop is not None else None
-            }
-
-        # If no buy or sell condition is met, return an empty dictionary (no "hold")
-        return {}
-
-
-    def on_order_execution(self, order, portfolio):
-        """
-        Handle post-order execution logic, if needed.
-
-        Args:
-            order (dict): The order that was executed.
-            portfolio (Portfolio): The portfolio managing trades.
-        """
-        pass  # No specific action required after order execution for this strategy.
+        return {}  # No signal generated

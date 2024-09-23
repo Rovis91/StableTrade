@@ -43,17 +43,25 @@ class BacktestEngine:
                 self.logger.info(f"Data preprocessed for asset: {asset_name}")
             except Exception as e:
                 self.logger.error(f"Error preprocessing data for {asset_name}: {e}")
+                continue
 
         # Create unified timestamp list based on all assets
-        self.unified_timestamps = sorted(set(ts for asset in self.market_data.values() for ts in asset.index))
-        self.logger.info(f"Unified timestamps generated with {len(self.unified_timestamps)} entries.")
+        if self.market_data:
+            self.unified_timestamps = sorted(set(ts for asset in self.market_data.values() for ts in asset.index))
+            self.logger.info(f"Unified timestamps generated with {len(self.unified_timestamps)} entries.")
+        else:
+            self.logger.error("No market data available after preprocessing.")
 
     def run_backtest(self):
         """Run the backtest on all assets, processing each timestamp sequentially."""
         self.logger.info("Starting backtest...")
 
+        if not self.unified_timestamps:
+            self.logger.error("Backtest cannot proceed. No timestamps available.")
+            return
+
         for timestamp in self.unified_timestamps:
-            # self.logger.debug(f"Processing timestamp: {timestamp}")
+            signals = []
 
             for asset_name, data in self.market_data.items():
                 if timestamp in data.index:
@@ -63,21 +71,24 @@ class BacktestEngine:
                     # Get active trades for this asset
                     active_trades = self.trade_manager.get_trade(status='open')
 
-                    # Execute the strategy to generate signals
-                    signals = strategy.generate_signals(row_data, active_trades)
-
-                    # Log generated signals
-                    if signals:
-                        self.logger.info(f"Generated signals at {timestamp} for {asset_name}: {signals}")
-                    
                     # Update trailing stop before checking stop loss or take profit
                     self._update_trailing_stops(asset_name, row_data['close'])
 
                     # Check stop-loss and take-profit for active trades
                     self._check_stop_loss_take_profit(asset_name, row_data['close'], timestamp)
 
-                    # Pass signals to portfolio for validation and execution
-                    self.portfolio.process_signals(signals=signals, market_prices={asset_name: row_data['close']}, timestamp=timestamp)
+                    # Execute the strategy to generate signals
+                    signal = strategy.generate_signal(row_data, active_trades)
+
+                    # Append signal to the list of signals if not empty
+                    if signal:
+                        signals.append(signal)
+
+            # Only process signals and trigger the portfolio if there are signals
+            if signals:
+                self.logger.debug(f"Generated signals at {timestamp}: {signals}")
+                # Pass signals to portfolio for validation and execution
+                self.portfolio.process_signals(signals=signals, market_prices={asset_name: row_data['close']}, timestamp=timestamp)
 
         # Log final summary after the backtest
         self.log_final_summary()
@@ -85,19 +96,45 @@ class BacktestEngine:
     def log_final_summary(self):
         """Log a final summary of trades after the backtest completes."""
         all_trades = self.trade_manager.get_trade()
-        open_trades = self.trade_manager.get_trade(status='open')
-        closed_trades = self.trade_manager.get_trade(status='closed')
+
+        if not all_trades:
+            self.logger.error("No trades executed during the backtest.")
+            return
+
+        total_profit = 0
+        winning_trades = 0
+        losing_trades = 0
+        stop_loss_trades = 0
+        take_profit_trades = 0
+        total_holding_time = 0
+
+        for trade in all_trades:
+            profit = (trade['exit_price'] - trade['entry_price']) * trade['amount'] - trade['entry_fee'] - trade['exit_fee']
+            total_profit += profit
+
+            if profit > 0:
+                winning_trades += 1
+            else:
+                losing_trades += 1
+
+            if trade['exit_reason'] == "stop_loss":
+                stop_loss_trades += 1
+            elif trade['exit_reason'] == "take_profit":
+                take_profit_trades += 1
+            
+            holding_time = trade['exit_timestamp'] - trade['entry_timestamp']
+            total_holding_time += holding_time
+
+        avg_holding_time = total_holding_time / len(all_trades) if all_trades else 0
 
         self.logger.info("Backtest completed.")
         self.logger.info(f"Total trades executed: {len(all_trades)}")
-        self.logger.info(f"Open trades: {len(open_trades)}")
-        self.logger.info(f"Closed trades: {len(closed_trades)}")
-
-        if open_trades:
-            self.logger.info(f"Open trades details: {open_trades}")
-        
-        if closed_trades:
-            self.logger.info(f"Closed trades details: {closed_trades}")
+        self.logger.info(f"Total profit/loss: {total_profit}")
+        self.logger.info(f"Number of winning trades: {winning_trades}")
+        self.logger.info(f"Number of losing trades: {losing_trades}")
+        self.logger.info(f"Trades closed due to stop loss: {stop_loss_trades}")
+        self.logger.info(f"Trades closed due to take profit: {take_profit_trades}")
+        self.logger.info(f"Average holding time: {avg_holding_time / 60000:.2f} minutes")
 
     def _update_trailing_stops(self, asset_name, current_price):
         """Update trailing stop for open trades."""

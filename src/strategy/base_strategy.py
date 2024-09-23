@@ -30,7 +30,7 @@ class Strategy(ABC):
         pass
 
     @abstractmethod
-    def generate_signals(self, market_data: pd.Series, active_trades: list) -> dict:
+    def generate_signal(self, market_data: pd.Series, active_trades: list) -> dict:
         """
         Generate trading signals based on market data and current active trades.
         
@@ -54,7 +54,8 @@ class Strategy(ABC):
         if signal:
             self.logger.info(f"Generated signal: {signal}")
         else:
-            self.logger.info(f"No signal generated for {self.market} at this time.")
+            # Logging at a lower level to avoid overloading logs
+            self.logger.debug(f"No signal generated for {self.market} at this time.")
 
     def log_indicator_error(self, indicator_name: str):
         """
@@ -64,3 +65,4 @@ class Strategy(ABC):
             indicator_name (str): The name of the missing or incorrect indicator.
         """
         self.logger.error(f"Required indicator '{indicator_name}' is missing or has invalid data for {self.market}.")
+

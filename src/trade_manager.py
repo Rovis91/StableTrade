@@ -15,9 +15,9 @@ class TradeManager:
             entry_price (float): The price at which the trade is opened.
             entry_timestamp (float): The timestamp when the trade is opened.
             entry_fee (float): The fee applied when opening the trade.
-            stop_loss (float, optional): Stop loss price (can be updated later).
-            take_profit (float, optional): Take profit price (can be updated later).
-            trailing_stop (float, optional): Trailing stop percentage (to adjust stop-loss).
+            stop_loss (float, optional): Stop loss price.
+            take_profit (float, optional): Take profit price.
+            trailing_stop (float, optional): Trailing stop percentage.
             entry_reason (str, optional): Reason for entering the trade.
 
         Returns:
@@ -37,12 +37,12 @@ class TradeManager:
             'status': 'open',
             'entry_reason': entry_reason,
             'exit_reason': None,
-            'stop_loss': stop_loss,  # Optional
-            'take_profit': take_profit,  # Optional
-            'trailing_stop': trailing_stop,  # Optional
+            'stop_loss': stop_loss,  # Already market price
+            'take_profit': take_profit,  # Already market price
+            'trailing_stop': trailing_stop,  # Percentage
         }
         self.trades.append(trade)
-        logging.info(f"Trade {self.trade_counter} opened for {asset_name} at price {entry_price}, amount: {amount}, stop_loss: {stop_loss}, take_profit: {take_profit}")
+        logging.info(f"Trade {self.trade_counter} opened for {asset_name} at {entry_price}, amount: {amount}, stop_loss: {stop_loss}, take_profit: {take_profit}")
         return trade
 
     def close_trade(self, trade_id, exit_price, exit_timestamp, exit_fee, exit_reason="sell_signal"):
@@ -66,9 +66,9 @@ class TradeManager:
                 trade['exit_fee'] = exit_fee
                 trade['status'] = 'closed'
                 trade['exit_reason'] = exit_reason
-                logging.info(f"Trade {trade_id} closed at price {exit_price}, reason: {exit_reason}, exit_fee: {exit_fee}")
+                logging.info(f"Trade {trade_id} closed at {exit_price}, reason: {exit_reason}, exit_fee: {exit_fee}")
                 return trade
-        
+
         logging.error(f"Attempt to close trade {trade_id} failed: trade not found or already closed.")
         return None
 
@@ -83,18 +83,19 @@ class TradeManager:
         Returns:
             list: A list of trades that match the search criteria.
         """
+        # If trade_id is specified, return the trade with that specific ID.
         if trade_id is not None:
             trade = [trade for trade in self.trades if trade['id'] == trade_id]
             if not trade:
                 logging.warning(f"Trade with ID {trade_id} not found.")
             return trade
 
+        # If status is specified, return trades with the given status (open or closed).
         if status is not None:
             filtered_trades = [trade for trade in self.trades if trade['status'] == status]
-            if not filtered_trades:
-                logging.warning(f"No trades found with status '{status}'.")
             return filtered_trades
 
+        # If neither trade_id nor status is provided, return all trades.
         return self.trades
 
     def modify_trade_parameters(self, trade_id, stop_loss=None, take_profit=None):

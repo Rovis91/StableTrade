@@ -20,10 +20,13 @@ class Portfolio:
     def process_signals(self, signals: list, market_prices: dict, timestamp: int):
         """
         Process a batch of signals, validate them, and execute trades if possible.
+        Prioritize sell signals over buy signals.
         """
+        # Prioritize sell > buy
+        signals = sorted(signals, key=lambda x: x['action'] == 'sell', reverse=True)
         validated_signals = []
 
-        # Validate all signals (buy and sell)
+        # Validate all signals
         for signal in signals:
             if self.validate_signal(signal):
                 validated_signals.append(signal)
@@ -38,7 +41,6 @@ class Portfolio:
         # Log the updated portfolio state after processing the signals
         self._log_portfolio_state(timestamp)
 
-
     def validate_signal(self, signal: dict) -> bool:
         """
         Validates whether a trade can be executed based on available cash or assets.
@@ -52,7 +54,7 @@ class Portfolio:
         # Ensure all necessary fields are present
         required_fields = ['action', 'amount', 'asset_name', 'price']
         if not all(field in signal for field in required_fields):
-            logging.error(f"Signal is missing required fields: {signal}")
+            self.logger.error(f"Signal is missing required fields: {signal}")
             return False
 
         action = signal['action']
@@ -60,7 +62,6 @@ class Portfolio:
         asset = signal['asset_name']
         price = signal['price']
         entry_fee = self.get_fee(asset, 'entry')
-
         total_cost = amount * price
 
         if action == 'buy':
@@ -68,13 +69,14 @@ class Portfolio:
             if self.holdings.get('cash', 0) >= (total_cost + entry_fee):
                 return True
             else:
-                logging.warning(f"Not enough cash to buy {amount} of {asset} at {price}. Required: {total_cost + entry_fee}, Available: {self.holdings.get('cash', 0)}")
+                self.logger.warning(f"Not enough cash to buy {amount} of {asset} at {price}. "
+                                    f"Required: {total_cost + entry_fee}, Available: {self.holdings.get('cash', 0)}")
         elif action == 'sell':
             # Validate asset availability for sell orders
             if asset in self.holdings and self.holdings[asset] >= amount:
                 return True
             else:
-                logging.warning(f"Not enough {asset} to sell. Required: {amount}, Available: {self.holdings.get(asset, 0)}")
+                self.logger.warning(f"Not enough {asset} to sell. Required: {amount}, Available: {self.holdings.get(asset, 0)}")
         
         return False
 
@@ -96,8 +98,8 @@ class Portfolio:
         trailing_stop = signal.get('trailing_stop')
         entry_reason = signal.get('reason', 'buy_signal')
 
-        # Log the trade details
-        logging.info(f"Executing trade: {signal}")
+        # Log the trade details at a lower log level for debugging purposes
+        self.logger.debug(f"Preparing to execute trade: {signal}")
 
         # Open the trade using TradeManager
         trade = self.trade_manager.open_trade(
@@ -136,12 +138,12 @@ class Portfolio:
             self.holdings[asset] -= amount  # Reduce asset quantity
             if self.holdings[asset] == 0:
                 del self.holdings[asset]  # Remove asset from holdings if quantity is 0
-            logging.info(f"Updated holdings after selling {amount} of {asset}. New cash balance: {self.holdings['cash']}")
+            self.logger.info(f"Updated holdings after selling {amount} of {asset}. New cash balance: {self.holdings['cash']}")
         else:
             # This is a buy trade
             self.holdings['cash'] -= (total_cost + entry_fee)  # Deduct cash
             self.holdings[asset] = self.holdings.get(asset, 0) + amount  # Add to holdings
-            logging.info(f"Updated holdings after buying {amount} of {asset}. New cash balance: {self.holdings['cash']}")
+            self.logger.info(f"Updated holdings after buying {amount} of {asset}. New cash balance: {self.holdings['cash']}")
 
     def _log_portfolio_state(self, timestamp: int):
         """
@@ -154,7 +156,7 @@ class Portfolio:
             'timestamp': timestamp,
             'holdings': self.holdings.copy()  # Store a snapshot of the current holdings
         })
-        logging.info(f"Portfolio state at {timestamp}: {self.holdings}")
+        self.logger.info(f"Portfolio state at {timestamp}: {self.holdings}")
 
     def get_total_value(self, market_prices: dict):
         """
