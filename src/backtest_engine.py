@@ -1,6 +1,7 @@
 import logging
 import pandas as pd
 from src.data_preprocessor import DataPreprocessor
+from src.metrics import MetricsModule
 
 class BacktestEngine:
     def __init__(self, assets, strategies, portfolio, trade_manager, base_currency="USD", slippage=0.0, latency=0):
@@ -105,55 +106,49 @@ class BacktestEngine:
         self.log_final_summary()
 
     def log_final_summary(self):
-        """Log a final summary of trades after the backtest completes."""
+        """Log a final summary of trades and portfolio performance after the backtest completes."""
+        
         all_trades = self.trade_manager.get_trade()
 
         if not all_trades:
             self.logger.error("No trades executed during the backtest.")
             return
 
-        total_profit = 0
-        winning_trades = 0
-        losing_trades = 0
-        stop_loss_trades = 0
-        take_profit_trades = 0
-        total_fees = 0
-        total_holding_time = 0
+        # Ensure market_data is properly structured and passed for portfolio evaluation
+        if not self.market_data:
+            self.logger.error("Market data not available for portfolio evaluation.")
+            return
 
-        for trade in all_trades:
-            market_type = trade.get('market_type', 'spot')  # Default to 'spot' if not set
-            leverage = trade.get('leverage', 1) if market_type == 'futures' else 1  # Apply leverage for futures
+        # Ensure that the timestamps in portfolio_history align with market_data
+        if not self.portfolio.history:
+            self.logger.error("Portfolio history not available for trade summary.")
+            return
 
-            # Apply slippage and adjust profit calculations
-            slippage_adjusted_exit_price = trade['exit_price'] * (1 - self.slippage)
-            profit = ((slippage_adjusted_exit_price - trade['entry_price']) * trade['amount'] * leverage) - trade['entry_fee'] - trade['exit_fee']
-            total_profit += profit
-            total_fees += (trade['entry_fee'] + trade['exit_fee'])
+        try:
+            metrics_module = MetricsModule(base_currency=self.base_currency)
+            trade_summary = metrics_module.calculate_trade_summary(
+                trades=all_trades,
+                portfolio_history=self.portfolio.history,
+                market_data=self.market_data,
+                slippage=self.slippage
+            )
 
-            if profit > 0:
-                winning_trades += 1
-            else:
-                losing_trades += 1
+            # Log summary statistics after metrics are calculated
+            self.logger.info("Backtest completed.")
+            self.logger.info(f"Total trades executed: {trade_summary['total_trades']}")
+            self.logger.info(f"Total profit/loss: {trade_summary['total_profit']}")
+            self.logger.info(f"Total fees paid: {trade_summary['total_fees']}")
+            self.logger.info(f"Number of winning trades: {trade_summary['winning_trades']}")
+            self.logger.info(f"Number of losing trades: {trade_summary['losing_trades']}")
+            self.logger.info(f"Trades closed due to stop loss: {trade_summary['stop_loss_trades']}")
+            self.logger.info(f"Trades closed due to take profit: {trade_summary['take_profit_trades']}")
+            self.logger.info(f"Average holding time: {trade_summary['average_holding_time']:.2f} minutes")
+            self.logger.info(f"Final portfolio value: {trade_summary['final_portfolio_value']}")
+            self.logger.info(f"Total percent increase: {trade_summary['total_percent_increase']:.2f}%")
+            self.logger.info(f"Average percent return per month: {trade_summary['avg_percent_per_month']:.2f}%")
 
-            if trade['exit_reason'] == "stop_loss":
-                stop_loss_trades += 1
-            elif trade['exit_reason'] == "take_profit":
-                take_profit_trades += 1
-            
-            holding_time = trade['exit_timestamp'] - trade['entry_timestamp']
-            total_holding_time += holding_time
-
-        avg_holding_time = total_holding_time / len(all_trades) if all_trades else 0
-
-        self.logger.info("Backtest completed.")
-        self.logger.info(f"Total trades executed: {len(all_trades)}")
-        self.logger.info(f"Total profit/loss: {total_profit}")
-        self.logger.info(f"Total fees paid: {total_fees}")
-        self.logger.info(f"Number of winning trades: {winning_trades}")
-        self.logger.info(f"Number of losing trades: {losing_trades}")
-        self.logger.info(f"Trades closed due to stop loss: {stop_loss_trades}")
-        self.logger.info(f"Trades closed due to take profit: {take_profit_trades}")
-        self.logger.info(f"Average holding time: {avg_holding_time / 60000:.2f} minutes")
+        except Exception as e:
+            self.logger.error(f"Error calculating trade summary: {e}", exc_info=True)
 
     def _update_trailing_stops(self, asset_name, current_price):
         """Update trailing stop for open trades."""
