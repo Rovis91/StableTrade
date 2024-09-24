@@ -52,7 +52,7 @@ class Portfolio:
 
     def validate_signal(self, signal: dict, market_prices: dict) -> bool:
         """
-        Validates whether a trade can be executed based on available cash or assets.
+        Validates whether a trade can be executed based on available cash, max trades, and max exposure.
 
         Args:
             signal (dict): The signal to validate. Should include 'action', 'amount', 'price', 'asset_name', and optional 'fees'.
@@ -75,7 +75,28 @@ class Portfolio:
         total_cost = amount * price
 
         market_type = self.portfolio_config[asset]['market_type']
+        max_trades = self.portfolio_config[asset].get('max_trades', float('inf'))
+        max_exposure = self.portfolio_config[asset].get('max_exposure', 1.0)  # Default to 100% exposure if not set
 
+        # Validate max trades (spot and futures)
+        open_trades = self.trade_manager.get_trade(status='open')
+        asset_open_trades = [trade for trade in open_trades if trade['asset_name'] == asset]
+
+        if len(asset_open_trades) >= max_trades:
+            self.logger.warning(f"Max trades limit reached for {asset}. Cannot open new trade.")
+            return False
+
+        # Calculate current exposure and check if the new trade would breach the max exposure limit
+        portfolio_value = self.get_total_value(market_prices)
+        current_exposure = (self.holdings.get(asset, 0) * market_prices[asset]) / portfolio_value
+        new_exposure = (total_cost / portfolio_value)
+
+        if current_exposure + new_exposure > max_exposure:
+            self.logger.warning(f"Max exposure limit reached for {asset}. Current: {current_exposure:.2%}, "
+                                f"New Trade: {new_exposure:.2%}, Max Allowed: {max_exposure:.2%}.")
+            return False
+
+        # Check spot market conditions
         if market_type == 'spot':
             if action == 'buy':
                 # Validate cash availability for buy orders
@@ -136,6 +157,12 @@ class Portfolio:
 
         # Update the portfolio holdings and cash
         self.update_holdings(trade)
+        
+        # After execution, log the portfolio's exposure for this asset
+        portfolio_value = self.get_total_value(market_prices)
+        new_exposure = (self.holdings.get(asset_name, 0) * market_prices[asset_name]) / portfolio_value
+        self.logger.info(f"New exposure for {asset_name}: {new_exposure:.2%} of total portfolio value.")
+
 
     def update_holdings(self, trade: dict):
         """

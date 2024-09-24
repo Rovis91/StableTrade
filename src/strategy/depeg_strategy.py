@@ -20,12 +20,11 @@ class DepegStrategy(Strategy):
 
         # Market-specific configurations
         self.config = {
-            'market_type': 'spot',  # Defines this as a spot market
-            'fees': {
-                'entry': 0.001,  # 0.1% entry fee
-                'exit': 0.001   # 0.1% exit fee
+            'market_type': 'spot',
+            'fees': {'entry': 0.001, 'exit': 0.001},
+            'max_trades': 5,  
+            'max_exposure': 0.70
             }
-        }
 
         if depeg_threshold <= 0:
             raise ValueError("depeg_threshold must be a positive value.")
