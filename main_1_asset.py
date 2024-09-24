@@ -34,7 +34,7 @@ def main():
     # Setup logging
     logger = setup_logging()
 
-    # Define the asset and its corresponding CSV data paths (for preprocessing and preprocessed data)
+    # Define the assets and their corresponding CSV data paths
     assets = {
         'EUTEUR': 'D:\\StableTrade_dataset\\EUTEUR_1m\\EUTEUR_1m_final_merged.csv'
     }
@@ -47,13 +47,13 @@ def main():
     # Initialize trade manager
     trade_manager = TradeManager()
 
-    # Initialize strategies for the assets
+    # Initialize strategies for both assets (same strategy for both)
     strategies = {
         'EUTEUR': DepegStrategy(
             market='EUTEUR',
             trade_manager=trade_manager,
             depeg_threshold=5,
-            trade_amount=0.1,
+            trade_amount=0.1,  # 10% of portfolio cash available
             stop_loss=None,
             take_profit=None,
             trailing_stop=None
@@ -65,14 +65,21 @@ def main():
     for asset_name, strategy in strategies.items():
         p_config[asset_name] = {
             'market_type': strategy.config['market_type'],  # Access market_type from config
-            'fees': strategy.config['fees']  # Access fees from config
+            'fees': strategy.config['fees'],  # Access fees from config
+            'max_trades': strategy.config['max_trades'],  # Max trades per asset
+            'max_exposure': strategy.config['max_exposure']  # Max exposure per asset
         }
 
     # Initialize portfolio with the gathered configuration
     initial_cash = 100000  # Example initial cash
-    portfolio = Portfolio(initial_cash=initial_cash, trade_manager=trade_manager, portfolio_config=p_config)
+    portfolio = Portfolio(
+        initial_cash=initial_cash,
+        trade_manager=trade_manager,
+        portfolio_config=p_config,
+        base_currency='EUR'  # Set the base currency (could also be 'USD' depending on the dataset)
+    )
 
-    # Initialize the backtest engine
+    # Initialize the backtest engine with both assets and strategies
     backtest_engine = BacktestEngine(
         assets=assets,
         strategies=strategies,

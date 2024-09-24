@@ -6,21 +6,42 @@ class Portfolio:
     It handles trade execution, updates portfolio states, and processes trade signals.
     """
 
-    def __init__(self, initial_cash: float, trade_manager, portfolio_config: dict):
+    def __init__(self, initial_cash: float, trade_manager, portfolio_config: dict, base_currency: str):
         """
-        Initialize the portfolio with the given initial cash balance and portfolio configurations.
+        Initialize the portfolio with the given initial cash balance, base currency, and portfolio configurations.
 
         Args:
-            initial_cash (float): Starting cash balance.
+            initial_cash (float): Starting cash balance in the base currency.
             trade_manager (TradeManager): An instance of the TradeManager class.
-            portfolio_config (dict): Configuration for each asset (market type, fees, etc.)
-                                     e.g., {'EUTEUR': {'market_type': 'spot', 'fees': {'entry': 0.001, 'exit': 0.001}}}
+            portfolio_config (dict): Configuration for each asset (market type, fees, max exposure, etc.)
+                                     e.g., {'EUT': {'market_type': 'spot', 'fees': {'entry': 0.001, 'exit': 0.001}, 'max_exposure': 0.3, 'max_trades': 5}}.
+            base_currency (str): The base currency for the portfolio (e.g., 'EUR', 'USD').
         """
-        self.holdings = {'cash': initial_cash}
-        self.history = []
-        self.trade_manager = trade_manager
-        self.portfolio_config = portfolio_config
+        # Validate that all assets use the same base currency
+        self._validate_base_currency(portfolio_config, base_currency)
+
+        self.holdings = {base_currency: initial_cash}  # Cash is tracked under the base currency (e.g., 'EUR' or 'USD')
+        self.history = []  # To store historical snapshots of portfolio state
+        self.trade_manager = trade_manager  # Handles trade execution
+        self.portfolio_config = portfolio_config  # Asset-specific configurations
+        self.base_currency = base_currency  # The currency in which the cash is held
         self.logger = logging.getLogger(__name__)
+
+    def _validate_base_currency(self, portfolio_config: dict, base_currency: str):
+        """
+        Validates that all assets in the portfolio use the same base currency.
+
+        Args:
+            portfolio_config (dict): The configuration for each asset.
+            base_currency (str): The base currency to validate against.
+
+        Raises:
+            ValueError: If any asset uses a different base currency.
+        """
+        for asset, config in portfolio_config.items():
+            asset_currency = config.get('currency', base_currency)
+            if asset_currency != base_currency:
+                raise ValueError(f"Asset {asset} uses {asset_currency}, but portfolio is set to {base_currency}.")
 
     def process_signals(self, signals: list, market_prices: dict, timestamp: int):
         """
@@ -31,18 +52,18 @@ class Portfolio:
             market_prices (dict): Current prices for each asset.
             timestamp (int): The current timestamp for when signals are processed.
         """
-        # Prioritize sell > buy
+        # Prioritize sell signals over buy signals
         signals = sorted(signals, key=lambda x: x['action'] == 'sell', reverse=True)
         validated_signals = []
 
-        # Validate all signals
+        # Validate each signal
         for signal in signals:
             if self.validate_signal(signal, market_prices):
                 validated_signals.append(signal)
             else:
                 self.logger.warning(f"Signal validation failed for signal: {signal}")
 
-        # Execute validated trades via TradeManager
+        # Execute each validated trade
         for signal in validated_signals:
             self.logger.info(f"Executing trade for signal: {signal}")
             self._execute_trade(signal, market_prices, timestamp)
@@ -61,7 +82,7 @@ class Portfolio:
         Returns:
             bool: True if the signal can be executed, False otherwise.
         """
-        # Ensure all necessary fields are present
+        # Ensure all necessary fields are present in the signal
         required_fields = ['action', 'amount', 'asset_name', 'price']
         if not all(field in signal for field in required_fields):
             self.logger.error(f"Signal is missing required fields: {signal}")
@@ -78,7 +99,7 @@ class Portfolio:
         max_trades = self.portfolio_config[asset].get('max_trades', float('inf'))
         max_exposure = self.portfolio_config[asset].get('max_exposure', 1.0)  # Default to 100% exposure if not set
 
-        # Validate max trades (spot and futures)
+        # Validate the number of open trades for the asset
         open_trades = self.trade_manager.get_trade(status='open')
         asset_open_trades = [trade for trade in open_trades if trade['asset_name'] == asset]
 
@@ -86,35 +107,32 @@ class Portfolio:
             self.logger.warning(f"Max trades limit reached for {asset}. Cannot open new trade.")
             return False
 
-        # Calculate current exposure and check if the new trade would breach the max exposure limit
+        # Validate the exposure of the portfolio to the asset
         portfolio_value = self.get_total_value(market_prices)
-        current_exposure = (self.holdings.get(asset, 0) * market_prices[asset]) / portfolio_value
-        new_exposure = (total_cost / portfolio_value)
+        current_exposure = (self.holdings.get(asset, 0) * market_prices[asset]) / portfolio_value if asset in self.holdings else 0
+        new_exposure = total_cost / portfolio_value
 
         if current_exposure + new_exposure > max_exposure:
             self.logger.warning(f"Max exposure limit reached for {asset}. Current: {current_exposure:.2%}, "
                                 f"New Trade: {new_exposure:.2%}, Max Allowed: {max_exposure:.2%}.")
             return False
 
-        # Check spot market conditions
+        # Validate cash availability for spot market buy trades
         if market_type == 'spot':
             if action == 'buy':
-                # Validate cash availability for buy orders
-                if self.holdings.get('cash', 0) >= (total_cost + entry_fee):
+                if self.holdings.get(self.base_currency, 0) >= total_cost + entry_fee:
                     return True
                 else:
-                    self.logger.warning(f"Not enough cash to buy {amount} of {asset} at {price}. "
-                                        f"Required: {total_cost + entry_fee}, Available: {self.holdings.get('cash', 0)}")
+                    self.logger.warning(f"Not enough {self.base_currency} to buy {amount} of {asset} at {price}. "
+                                        f"Required: {total_cost + entry_fee}, Available: {self.holdings.get(self.base_currency, 0)}")
             elif action == 'sell':
-                # Validate asset availability for sell orders
                 if asset in self.holdings and self.holdings[asset] >= amount:
                     return True
                 else:
                     self.logger.warning(f"Not enough {asset} to sell. Required: {amount}, Available: {self.holdings.get(asset, 0)}")
         elif market_type == 'futures':
-            # For futures, validate availability based on leverage and margin rules (placeholder)
             self.logger.info(f"Validating futures trade for {asset}. Leverage/margin rules can be implemented here.")
-            return True  # Futures validation can be expanded based on margin calculations
+            return True  # Placeholder for futures validation logic
         else:
             self.logger.error(f"Unsupported market type {market_type} for {asset}")
             return False
@@ -139,7 +157,7 @@ class Portfolio:
         trailing_stop = signal.get('trailing_stop')
         entry_reason = signal.get('reason', 'buy_signal')
 
-        # Log the trade details at a lower log level for debugging purposes
+        # Log trade execution details
         self.logger.debug(f"Preparing to execute trade: {signal}")
 
         # Open the trade using TradeManager
@@ -155,14 +173,13 @@ class Portfolio:
             entry_reason=entry_reason
         )
 
-        # Update the portfolio holdings and cash
+        # Update portfolio holdings after the trade is executed
         self.update_holdings(trade)
-        
-        # After execution, log the portfolio's exposure for this asset
-        portfolio_value = self.get_total_value(market_prices)
-        new_exposure = (self.holdings.get(asset_name, 0) * market_prices[asset_name]) / portfolio_value
-        self.logger.info(f"New exposure for {asset_name}: {new_exposure:.2%} of total portfolio value.")
 
+        # Log the new exposure for the asset after the trade
+        portfolio_value = self.get_total_value(market_prices)
+        new_exposure = (self.holdings.get(asset_name, 0) * market_prices[asset_name]) / portfolio_value if asset_name in self.holdings else 0
+        self.logger.info(f"New exposure for {asset_name}: {new_exposure:.2%} of total portfolio value.")
 
     def update_holdings(self, trade: dict):
         """
@@ -181,20 +198,19 @@ class Portfolio:
 
         if market_type == 'spot':
             if trade['status'] == 'closed':
-                # This is a sell trade
+                # Update holdings for a sell trade
                 exit_fee = self.get_fee(asset, 'exit')
-                self.holdings['cash'] += (total_cost - exit_fee)  # Add to cash after fees
-                self.holdings[asset] -= amount  # Reduce asset quantity
+                self.holdings[self.base_currency] += (total_cost - exit_fee)
+                self.holdings[asset] -= amount
                 if self.holdings[asset] == 0:
-                    del self.holdings[asset]  # Remove asset from holdings if quantity is 0
-                self.logger.info(f"Updated holdings after selling {amount} of {asset}. New cash balance: {self.holdings['cash']}")
+                    del self.holdings[asset]
+                self.logger.info(f"Updated holdings after selling {amount} of {asset}. New {self.base_currency} balance: {self.holdings[self.base_currency]}")
             else:
-                # This is a buy trade
-                self.holdings['cash'] -= (total_cost + entry_fee)  # Deduct cash
-                self.holdings[asset] = self.holdings.get(asset, 0) + amount  # Add to holdings
-                self.logger.info(f"Updated holdings after buying {amount} of {asset}. New cash balance: {self.holdings['cash']}")
+                # Update holdings for a buy trade
+                self.holdings[self.base_currency] -= (total_cost + entry_fee)
+                self.holdings[asset] = self.holdings.get(asset, 0) + amount
+                self.logger.info(f"Updated holdings after buying {amount} of {asset}. New {self.base_currency} balance: {self.holdings[self.base_currency]}")
         elif market_type == 'futures':
-            # For futures, update cash and holdings differently as there's no direct asset holding
             self.logger.info(f"Futures trade executed for {asset}, amount: {amount}. No direct asset holding updated.")
         else:
             self.logger.error(f"Unsupported market type {market_type} for asset {asset}")
@@ -222,10 +238,10 @@ class Portfolio:
         Returns:
             float: The total portfolio value.
         """
-        total_value = self.holdings.get('cash', 0)
+        total_value = self.holdings.get(self.base_currency, 0)  # Use base currency cash balance
 
         for asset, quantity in self.holdings.items():
-            if asset != 'cash' and asset in market_prices:
+            if asset != self.base_currency and asset in market_prices:
                 total_value += quantity * market_prices[asset]
 
         return total_value

@@ -3,7 +3,7 @@ import pandas as pd
 from src.data_preprocessor import DataPreprocessor
 
 class BacktestEngine:
-    def __init__(self, assets, strategies, portfolio, trade_manager, slippage=0.0, latency=0):
+    def __init__(self, assets, strategies, portfolio, trade_manager, base_currency="USD", slippage=0.0, latency=0):
         """
         Initialize the backtest engine.
 
@@ -12,6 +12,7 @@ class BacktestEngine:
             strategies (dict): A dictionary of asset names and their corresponding strategy instances.
             portfolio (Portfolio): Portfolio instance for managing capital and trades.
             trade_manager (TradeManager): TradeManager instance to execute trades.
+            base_currency (str): The base currency to be used in the portfolio.
             slippage (float): Slippage to be applied to trades.
             latency (int): Simulated latency in milliseconds.
         """
@@ -19,6 +20,7 @@ class BacktestEngine:
         self.strategies = strategies
         self.portfolio = portfolio
         self.trade_manager = trade_manager
+        self.base_currency = base_currency
         self.slippage = slippage
         self.latency = latency
         self.market_data = {}
@@ -64,10 +66,14 @@ class BacktestEngine:
             signals = []
             self.logger.debug(f"Processing timestamp {timestamp}")
 
+            market_prices = {}
             for asset_name, data in self.market_data.items():
                 if timestamp in data.index:
                     row_data = data.loc[timestamp]
                     strategy = self.strategies[asset_name]
+
+                    # Add current price to market prices dictionary
+                    market_prices[asset_name] = row_data['close']
 
                     # Log the active trades for this asset before processing
                     active_trades = self.trade_manager.get_trade(status='open')
@@ -78,9 +84,13 @@ class BacktestEngine:
 
                     # Check stop-loss and take-profit conditions
                     self._check_stop_loss_take_profit(asset_name, row_data['close'], timestamp)
+                    
+                    # Get portfolio value and cash before generating signals
+                    portfolio_value = self.portfolio.get_total_value(market_prices={asset_name: row_data['close']})
+                    portfolio_cash = self.portfolio.holdings.get('cash', 0)
 
                     # Execute the strategy to generate signals
-                    signal = strategy.generate_signal(row_data, active_trades)
+                    signal = strategy.generate_signal(row_data, active_trades, portfolio_value, portfolio_cash)
                     self.logger.debug(f"Signal generated for {asset_name}: {signal}")
 
                     if signal:
@@ -89,7 +99,7 @@ class BacktestEngine:
             # Process signals only if available
             if signals:
                 self.logger.debug(f"Processing signals at {timestamp}: {signals}")
-                self.portfolio.process_signals(signals=signals, market_prices={asset_name: row_data['close']}, timestamp=timestamp)
+                self.portfolio.process_signals(signals=signals, market_prices=market_prices, timestamp=timestamp)
 
         # Log final summary after backtest
         self.log_final_summary()
@@ -107,6 +117,7 @@ class BacktestEngine:
         losing_trades = 0
         stop_loss_trades = 0
         take_profit_trades = 0
+        total_fees = 0
         total_holding_time = 0
 
         for trade in all_trades:
@@ -114,8 +125,10 @@ class BacktestEngine:
             leverage = trade.get('leverage', 1) if market_type == 'futures' else 1  # Apply leverage for futures
 
             # Apply slippage and adjust profit calculations
-            profit = ((trade['exit_price'] - trade['entry_price']) * trade['amount'] * leverage) - trade['entry_fee'] - trade['exit_fee']
+            slippage_adjusted_exit_price = trade['exit_price'] * (1 - self.slippage)
+            profit = ((slippage_adjusted_exit_price - trade['entry_price']) * trade['amount'] * leverage) - trade['entry_fee'] - trade['exit_fee']
             total_profit += profit
+            total_fees += (trade['entry_fee'] + trade['exit_fee'])
 
             if profit > 0:
                 winning_trades += 1
@@ -135,6 +148,7 @@ class BacktestEngine:
         self.logger.info("Backtest completed.")
         self.logger.info(f"Total trades executed: {len(all_trades)}")
         self.logger.info(f"Total profit/loss: {total_profit}")
+        self.logger.info(f"Total fees paid: {total_fees}")
         self.logger.info(f"Number of winning trades: {winning_trades}")
         self.logger.info(f"Number of losing trades: {losing_trades}")
         self.logger.info(f"Trades closed due to stop loss: {stop_loss_trades}")

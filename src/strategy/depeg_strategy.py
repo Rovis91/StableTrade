@@ -11,7 +11,7 @@ class DepegStrategy(Strategy):
             market (str): The market this strategy operates on (e.g., BTC/USD).
             trade_manager (TradeManager): The trade manager responsible for executing and managing trades.
             depeg_threshold (float): The percentage deviation to trigger a trade.
-            trade_amount (float): The amount to trade as a percentage of the portfolio.
+            trade_amount (float): The amount to trade as a percentage of the portfolio's available cash.
             stop_loss (float): Optional stop-loss level as a percentage of the entry price.
             take_profit (float): Optional take-profit level as a percentage of the entry price.
             trailing_stop (float): Optional trailing stop amount as a percentage of the entry price.
@@ -24,7 +24,7 @@ class DepegStrategy(Strategy):
             'fees': {'entry': 0.001, 'exit': 0.001},
             'max_trades': 5,  
             'max_exposure': 0.70
-            }
+        }
 
         if depeg_threshold <= 0:
             raise ValueError("depeg_threshold must be a positive value.")
@@ -82,18 +82,19 @@ class DepegStrategy(Strategy):
             self.logger.debug(f"Using SMA_20 as take profit: {sma_20}")
             return sma_20  # Default to using SMA_20 as the take profit level
 
-    def generate_signal(self, market_data: pd.Series, active_trades: list) -> dict:
+    def generate_signal(self, market_data: pd.Series, active_trades: list, portfolio_value: float, portfolio_cash: float) -> dict:
         """
-        Generate trading signals based on the current market data and active trades.
+        Generate trading signals based on the current market data, active trades, portfolio value, and cash.
 
         Args:
             market_data (pd.Series): A row of market data (e.g., open, high, low, close, volume).
             active_trades (list): A list of active trades to check before generating new signals.
+            portfolio_value (float): The total value of the portfolio.
+            portfolio_cash (float): The available cash in the portfolio.
 
         Returns:
             dict: A dictionary containing the trading signal with action and trade details.
         """
-        # Use precomputed indicators (e.g., SMA_20)
         sma_20 = market_data['SMA_20']
         current_price = market_data['close']
 
@@ -108,21 +109,19 @@ class DepegStrategy(Strategy):
         if deviation <= -self.depeg_threshold:
             self.logger.info(f"Buy condition met. Deviation: {deviation:.2f}% below SMA_20.")
 
-            # Calculate stop loss and take profit prices based on the current price
-            stop_loss_price = self.calculate_stop_loss(current_price)
-            take_profit_price = self.calculate_take_profit(current_price, sma_20)
 
             signal = {
                 'action': 'buy',
                 'amount': self.trade_amount,
                 'asset_name': self.market,
                 'price': current_price,
-                'stop_loss': stop_loss_price,  # Calculated stop loss
-                'take_profit': take_profit_price,  # Calculated take profit
-                'trailing_stop': self.trailing_stop_percent  # Trailing stop percentage
+                'stop_loss': None,
+                'take_profit': sma_20,
+                'trailing_stop': None,
             }
             self.logger.info(f"Generated buy signal: {signal}")
             return signal
 
         self.logger.debug(f"No buy signal generated. Current deviation: {deviation:.2f}%")
-        return {}  # No signal generated
+        return {}
+
