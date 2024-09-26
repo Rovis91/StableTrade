@@ -22,7 +22,7 @@ env/
 .ipynb_checkpoints/
 
 # Data files
-data/*.csv
+.csv
 data/*.json
 
 # Strategy files
