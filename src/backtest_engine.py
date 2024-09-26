@@ -113,10 +113,6 @@ class BacktestEngine:
 
             try:
                 self._process_timestamp(timestamp)
-                
-                # Periodic state logging
-                if i % 1000 == 0:
-                    self._log_periodic_state(timestamp)
 
             except Exception as e:
                 self.logger.error("Error during backtest at timestamp %d: %s", timestamp, str(e), exc_info=True)
@@ -247,17 +243,6 @@ class BacktestEngine:
             if asset != self.base_currency:
                 self.logger.info("Asset %s: %.8f", asset, amount)
 
-    def _log_periodic_state(self, timestamp: int) -> None:
-        """Log the periodic state of the portfolio during the backtest."""
-        self.logger.info("Portfolio state at timestamp %d:", timestamp)
-        portfolio_value = self.portfolio.get_total_value(
-            {asset: data.loc[timestamp, 'close'] for asset, data in self.market_data.items() if timestamp in data.index}
-        )
-        self.logger.info("Total portfolio value: %.2f %s", portfolio_value, self.base_currency)
-        self.logger.info("Cash balance: %.2f %s", self.portfolio.holdings.get(self.base_currency, 0), self.base_currency)
-        for asset, amount in self.portfolio.holdings.items():
-            if asset != self.base_currency:
-                self.logger.info("Asset %s: %.8f", asset, amount)
 
     def log_final_summary(self) -> None:
         """Log the final summary of the backtest."""
