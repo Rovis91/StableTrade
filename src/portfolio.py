@@ -3,7 +3,7 @@ from typing import Dict, List, Any
 from src.trade_manager import TradeManager
 
 class Portfolio:
-    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], base_currency: str, verbose: bool = False):
+    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], base_currency: str):
         """
         Initialize the portfolio with the given initial cash balance, base currency, and portfolio configurations.
 
@@ -11,7 +11,6 @@ class Portfolio:
             initial_cash (float): Starting cash balance in the base currency.
             portfolio_config (Dict[str, Dict]): Configuration for each asset (market type, fees, max exposure, etc.)
             base_currency (str): The base currency for the portfolio (e.g., 'EUR', 'USD').
-            verbose (bool): If True, enables verbose DEBUG logging.
         """
         self.base_currency = base_currency
         self.holdings = {base_currency: initial_cash}
@@ -19,16 +18,10 @@ class Portfolio:
         self.portfolio_config = portfolio_config
         self.trade_manager = TradeManager()
         self.logger = logging.getLogger(__name__)
-        self.verbose = verbose
-
-        if self.verbose:
-            self.logger.setLevel(logging.DEBUG)
 
         self._validate_portfolio_config(portfolio_config)
 
         self.logger.info(f"Portfolio initialized with {initial_cash} {base_currency}")
-        if self.verbose:
-            self.logger.debug(f"Initial portfolio config: {portfolio_config}")
     
     def _validate_portfolio_config(self, config: Dict[str, Dict]) -> None:
         """
@@ -48,73 +41,6 @@ class Portfolio:
                 self.logger.error(error_msg)
                 raise ValueError(error_msg)
         self.logger.debug("Portfolio configuration validated successfully")
-
-    def validate_signal(self, signal: Dict, market_prices: Dict[str, float]) -> bool:
-        """
-        Validates whether a trade can be executed based on portfolio constraints.
-
-        Args:
-            signal (Dict): The trading signal to validate.
-            market_prices (Dict[str, float]): Current market prices for assets.
-
-        Returns:
-            bool: True if the signal is valid and can be executed, False otherwise.
-        """
-        asset = signal.get('asset_name')
-        action = signal.get('action')
-        amount = float(signal.get('amount', 0.0))
-        price = market_prices.get(asset, 0.0)
-
-        if not asset or not action:
-            self.logger.error("Signal is missing required fields: 'asset_name' or 'action'")
-            return False
-
-        try:
-            entry_fee = self.get_fee(asset, 'entry')
-            market_type = self.portfolio_config[asset]['market_type']
-            max_trades = self.portfolio_config[asset].get('max_trades', float('inf'))
-            max_exposure = float(self.portfolio_config[asset].get('max_exposure', 1.0))
-
-            open_trades = self.trade_manager.get_trade(status='open')
-            asset_open_trades = [trade for trade in open_trades if trade['asset_name'] == asset]
-
-            if self.verbose:
-                self.logger.debug(f"Validating signal: asset={asset}, action={action}, amount={amount}, price={price}")
-
-            # Check max trades and exposure limits
-            if len(asset_open_trades) >= max_trades:
-                self.logger.warning(f"Max trades limit reached for {asset}. Cannot open new trade.")
-                return False
-
-            portfolio_value = self.get_total_value(market_prices)
-            current_exposure = self.get_asset_exposure(asset, market_prices)
-            new_exposure = (amount * price) / portfolio_value
-
-            if current_exposure + new_exposure > max_exposure:
-                self.logger.warning(f"Max exposure limit reached for {asset}.")
-                return False
-
-            # Spot market validation
-            if market_type == 'spot':
-                available_cash = self.holdings.get(self.base_currency, 0.0)
-                total_cost = amount * price + entry_fee
-                if action == 'buy' and available_cash >= total_cost:
-                    return True
-                elif action == 'sell' and self.holdings.get(asset, 0.0) >= amount:
-                    return True
-                else:
-                    self.logger.warning(f"Not enough {self.base_currency} or holdings for the trade.")
-
-            # Futures market validation (can be expanded)
-            elif market_type == 'futures':
-                return True  # Futures logic can be expanded here
-
-        except KeyError as e:
-            self.logger.error(f"Key error during signal validation: {e}", exc_info=True)
-        except Exception as e:
-            self.logger.error(f"Unexpected error during signal validation: {e}", exc_info=True)
-
-        return False
 
     def process_signals(self, signals: List[Dict], market_prices: Dict[str, float], timestamp: int) -> None:
         """
@@ -161,7 +87,10 @@ class Portfolio:
             except Exception as e:
                 self.logger.error(f"Error processing signal: {e}", exc_info=True)
 
-        self._log_portfolio_state(timestamp)
+        self.history.append({
+            'timestamp': timestamp,
+            'holdings': self.holdings.copy()
+            })
 
     def validate_signal(self, signal: Dict, market_prices: Dict[str, float]) -> bool:
         """
@@ -191,9 +120,6 @@ class Portfolio:
 
             open_trades = self.trade_manager.get_trade(status='open')
             asset_open_trades = [trade for trade in open_trades if trade['asset_name'] == asset]
-
-            if self.verbose:
-                self.logger.debug(f"Validating signal: asset={asset}, action={action}, amount={amount}, price={price}")
 
             # Check max trades and exposure limits
             if len(asset_open_trades) >= max_trades:
@@ -299,10 +225,6 @@ class Portfolio:
             exit_price = float(signal['price'])
             exit_reason = signal.get('reason', 'close_signal')
 
-            if self.verbose:
-                self.logger.debug(f"Closing trade: asset={asset_name}, trade_id={trade_id}, "
-                                  f"exit_price={exit_price}, exit_reason={exit_reason}")
-
             if trade_id:
                 trade = self.trade_manager.get_trade(trade_id=trade_id)
                 if trade and trade['status'] == 'open':
@@ -339,10 +261,6 @@ class Portfolio:
             entry_fee = trade['entry_fee']
 
             market_type = self.portfolio_config[asset]['market_type']
-
-            if self.verbose:
-                self.logger.debug(f"Updating holdings: asset={asset}, amount={amount}, "
-                                  f"base_amount={base_amount}, entry_fee={entry_fee}")
 
             if market_type == 'spot':
                 if trade['direction'] == 'sell':
@@ -383,8 +301,6 @@ class Portfolio:
             if asset != self.base_currency and asset in market_prices:
                 asset_value = quantity * market_prices[asset]
                 total_value += asset_value
-                if self.verbose:
-                    self.logger.debug(f"Asset: {asset}, Quantity: {quantity}, Value: {asset_value}")
 
         return total_value
 
@@ -400,21 +316,7 @@ class Portfolio:
             float: The fee amount.
         """
         fee = float(self.portfolio_config.get(asset_name, {}).get('fees', {}).get(fee_type, 0.0))
-        if self.verbose:
-            self.logger.debug(f"Fee for {asset_name} ({fee_type}): {fee}")
         return fee
-
-    def _log_portfolio_state(self, timestamp: int) -> None:
-        """
-        Logs the current portfolio state at a specific timestamp.
-
-        Args:
-            timestamp (int): The timestamp of the portfolio update.
-        """
-        self.history.append({
-            'timestamp': timestamp,
-            'holdings': self.holdings.copy()
-        })
 
     def get_asset_exposure(self, asset: str, market_prices: Dict[str, float]) -> float:
         """
