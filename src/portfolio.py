@@ -3,13 +3,14 @@ from typing import Dict, List, Any
 from src.trade_manager import TradeManager
 
 class Portfolio:
-    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], base_currency: str):
+    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], signal_database : None, base_currency: str):
         """
         Initialize the portfolio with the given initial cash balance, base currency, and portfolio configurations.
 
         Args:
             initial_cash (float): Starting cash balance in the base currency.
             portfolio_config (Dict[str, Dict]): Configuration for each asset (market type, fees, max exposure, etc.)
+            signal_database (SignalDatabase): The signal database to store and retrieve signals.
             base_currency (str): The base currency for the portfolio (e.g., 'EUR', 'USD').
         """
         self.base_currency = base_currency
@@ -18,6 +19,7 @@ class Portfolio:
         self.portfolio_config = portfolio_config
         self.trade_manager = TradeManager()
         self.logger = logging.getLogger(__name__)
+        self.signal_database = signal_database
 
         self._validate_portfolio_config(portfolio_config)
 
@@ -62,6 +64,7 @@ class Portfolio:
 
                 # Validate the signal
                 if not self.validate_signal(signal, market_prices):
+                    self.signal_database.update_signal_status(signal['signal_id'], 'rejected')
                     continue
 
                 # Perform action based on the signal's action type
@@ -191,6 +194,8 @@ class Portfolio:
                 direction=signal['action'],
                 entry_reason=entry_reason
             )
+            # Update signal status
+            self.signal_database.update_signal_status(signal['signal_id'], 'executed')
 
             # Update holdings
             market_type = self.portfolio_config[asset_name]['market_type']
@@ -239,6 +244,7 @@ class Portfolio:
                     if closed_trade:
                         self.update_holdings(closed_trade)
                         self.logger.info(f"Trade {trade_id} closed successfully")
+                        self.signal_database.update_signal_status(signal['signal_id'], 'executed')
                 else:
                     self.logger.warning(f"Trade {trade_id} not found or already closed.")
             else:

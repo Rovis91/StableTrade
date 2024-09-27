@@ -3,6 +3,7 @@ import pandas as pd
 from typing import Dict, List, Any
 from src.data_preprocessor import DataPreprocessor
 from src.metrics import MetricsModule
+from src.signal_database import SignalDatabase
 
 class BacktestEngine:
     """
@@ -13,7 +14,7 @@ class BacktestEngine:
 
     def __init__(self, assets: Dict[str, str], strategies: Dict[str, Any], portfolio, trade_manager, 
                  base_currency: str = "USD", slippage: float = 0.0, latency: int = 0, 
-                 metrics: MetricsModule = None, signal_database=None, debug_mode: bool = False):
+                 metrics: MetricsModule = None, signal_database=SignalDatabase(), debug_mode: bool = False):
         """
         Initialize the BacktestEngine with the given parameters.
         """
@@ -213,12 +214,11 @@ class BacktestEngine:
         """Process a batch of trading signals."""
         self.logger.debug("Processing %d signals at timestamp %d", len(signals), timestamp)
         
-        if self.signal_database:
-            self.signal_database.store_signals(signals)
-            self.logger.debug("Stored %d signals in the signal database", len(signals))
-
+        self.signal_database.add_signals(signals)
+        
         try:
             self.portfolio.process_signals(signals=signals, market_prices=market_prices, timestamp=timestamp)
+            
             self.logger.debug("Signals processed successfully")
         except Exception as e:
             self.logger.error("Error processing signals: %s", str(e), exc_info=True)
@@ -243,46 +243,14 @@ class BacktestEngine:
             if asset != self.base_currency:
                 self.logger.info("Asset %s: %.8f", asset, amount)
 
-
     def log_final_summary(self) -> None:
         """Log the final summary of the backtest."""
-        pass
-    '''
-        self.logger.info("Backtest completed. Generating final summary...")
-        all_trades = self.portfolio.trade_manager.get_trade()
-
-        if not all_trades:
-            self.logger.warning("No trades were executed during the backtest.")
-            return
-
-        try:
-            trade_summary = self.metrics.calculate_trade_summary(
-                trades=all_trades,
-                portfolio_history=self.portfolio.history,
-                market_data=self.market_data,
-                slippage=self.slippage
-            )
-
-            self.logger.info("Backtest Summary:")
-            for key, value in trade_summary.items():
-                self.logger.info("%s: %s", key.replace('_', ' ').title(), value)
-
-            # Log final portfolio state
-            final_timestamp = max(self.unified_timestamps)
-            final_market_prices = {
-                asset: data.loc[final_timestamp, 'close'] 
-                for asset, data in self.market_data.items() 
-                if final_timestamp in data.index
-            }
-            final_portfolio_value = self.portfolio.get_total_value(final_market_prices)
-            self.logger.info("Final Portfolio State:")
-            self.logger.info("Total portfolio value: %.2f %s", final_portfolio_value, self.base_currency)
-            for asset, amount in self.portfolio.holdings.items():
-                if asset == self.base_currency:
-                    self.logger.info("Cash balance: %.2f %s", amount, self.base_currency)
-                else:
-                    asset_value = amount * final_market_prices.get(asset, 0)
-                    self.logger.info
-        except Exception as e:
-            self.logger.error(f"An error occurred during the backtest: {e}", exc_info=True)
-            '''
+        # Print all the signals from the database
+        self.signal_database.get_signals()
+        self.logger.info("Final signals:")
+        for _, signal in self.signal_database.get_signals().iterrows():
+            # Print all dataset columns ( one line = one signal)
+            self.logger.info(f"Signal ID: {signal['signal_id']} at timestamp {signal['timestamp']} for assset {signal['asset_name']}")
+            self.logger.info(f"Action: {signal['action']} Amount: {signal['amount']} Price: {signal['price']}")
+            self.logger.info(f"Stop Loss: {signal['stop_loss']} Take Profit: {signal['take_profit']} Trailing Stop: {signal['trailing_stop']}")
+            self.logger.info(f"Status: {signal['status']} Reason: {signal['reason']}")

@@ -93,6 +93,7 @@ def main():
     portfolio = Portfolio(
         initial_cash=initial_cash,
         portfolio_config=portfolio_config,
+        signal_database=signal_database,
         base_currency=base_currency
     )
     logger.info(f"Portfolio initialized with {initial_cash} {base_currency}.")
@@ -108,8 +109,9 @@ def main():
         portfolio=portfolio,
         trade_manager=trade_manager,
         base_currency=base_currency,
-        slippage=0.0001,  # Added slippage parameter with a default value
-        metrics=metrics_module
+        slippage=0.0001,  
+        metrics=metrics_module,
+        signal_database=signal_database
     )
     logger.info("Backtest engine initialized.")
 
@@ -123,14 +125,6 @@ def main():
         logger.info("Starting backtest execution...")
         backtest_engine.run_backtest()
         logger.info("Backtest completed successfully.")
-
-        
-
-        # Print signal statistics
-        signal_stats = signal_database.get_signal_stats()
-        logger.info("Signal Statistics:")
-        for stat, value in signal_stats.items():
-            logger.info(f"{stat}: {value}")
 
     except Exception as e:
         logger.error(f"An error occurred during the backtest: {e}", exc_info=True)
