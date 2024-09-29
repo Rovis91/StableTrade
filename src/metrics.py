@@ -1,172 +1,106 @@
-import numpy as np
 import pandas as pd
-import logging
+import numpy as np
+from src.logger import setup_logger
+from typing import Dict, List
 
 class MetricsModule:
-    """
-    A module to compute financial performance metrics for a trading strategy.
-    This includes Sharpe Ratio, Max Drawdown, Cumulative Return, Profit Factor, and Win Rate.
-    """
-
-    def __init__(self, base_currency='USD', risk_free_rate=0.01):
-        """
-        Initialize the MetricsModule.
-
-        Args:
-            risk_free_rate (float): The risk-free rate used for the Sharpe Ratio calculation.
-        """
-        self.risk_free_rate = risk_free_rate
+    def __init__(self, portfolio, base_currency='USD', risk_free_rate=0.01):
+        self.portfolio = portfolio
         self.base_currency = base_currency
-        self.logger = logging.getLogger(__name__)
+        self.risk_free_rate = risk_free_rate
+        self.logger = setup_logger('metrics')
 
-    def calculate_sharpe_ratio(self, returns):
+    def create_portfolio_value_series(self, market_data: Dict[str, pd.DataFrame]) -> pd.Series:
         """
-        Calculate the Sharpe Ratio for a series of portfolio returns.
-
+        Create a time-indexed series of portfolio values.
+        
         Args:
-            returns (pd.Series): A pandas Series representing portfolio returns.
+            market_data (Dict[str, pd.DataFrame]): Market data for each asset.
+        
+        Returns:
+            pd.Series: Time-indexed series of portfolio values.
+        """
+        portfolio_values = []
+        for snapshot in self.portfolio.history:
+            timestamp = snapshot['timestamp']
+            holdings = snapshot['holdings']
+            total_value = holdings.get(self.base_currency, 0.0)
+            for asset, quantity in holdings.items():
+                if asset != self.base_currency and asset in market_data:
+                    asset_price = market_data[asset].loc[market_data[asset].index <= timestamp, 'close'].iloc[-1]
+                    total_value += quantity * asset_price
+            portfolio_values.append((pd.to_datetime(timestamp, unit='ms'), total_value))
+        return pd.Series(dict(portfolio_values))
 
+    def calculate_daily_returns(self, market_data: Dict[str, pd.DataFrame]) -> pd.Series:
+        portfolio_values = self.create_portfolio_value_series(market_data)
+        daily_portfolio_values = portfolio_values.resample('D').last()
+        daily_returns = daily_portfolio_values.pct_change(fill_method=None).dropna()
+        return daily_returns
+
+    def calculate_sharpe_ratio(self, market_data: Dict[str, pd.DataFrame]) -> float:
+        """
+        Calculate the Sharpe Ratio for the portfolio.
+        
+        Args:
+            market_data (Dict[str, pd.DataFrame]): Market data for each asset.
+        
         Returns:
             float: The Sharpe Ratio.
         """
-        excess_returns = returns - self.risk_free_rate / 252  # Adjust risk-free rate for daily returns
-        avg_excess_return = excess_returns.mean()
-        std_dev = excess_returns.std()
-
-        if std_dev == 0:
-            return np.nan  # To avoid division by zero
-
-        sharpe_ratio = avg_excess_return / std_dev
+        daily_returns = self.calculate_daily_returns(market_data)
+        excess_returns = daily_returns - self.risk_free_rate / 252
+        sharpe_ratio = np.sqrt(252) * excess_returns.mean() / excess_returns.std()
         return sharpe_ratio
 
-    def calculate_max_drawdown(self, portfolio_values):
+    def calculate_max_drawdown(self, market_data: Dict[str, pd.DataFrame]) -> float:
         """
-        Calculate the Maximum Drawdown for a series of portfolio values.
-
+        Calculate the Maximum Drawdown for the portfolio.
+        
         Args:
-            portfolio_values (pd.Series): A pandas Series representing portfolio values over time.
-
+            market_data (Dict[str, pd.DataFrame]): Market data for each asset.
+        
         Returns:
             float: The Maximum Drawdown.
         """
+        portfolio_values = self.create_portfolio_value_series(market_data)
         cumulative_max = portfolio_values.cummax()
         drawdowns = (portfolio_values - cumulative_max) / cumulative_max
-        max_drawdown = drawdowns.min()
-        return max_drawdown
+        return drawdowns.min()
 
-    def calculate_cumulative_return(self, portfolio_values):
+    def calculate_cumulative_return(self, market_data: Dict[str, pd.DataFrame]) -> float:
         """
-        Calculate the Cumulative Return for a series of portfolio values.
-
+        Calculate the Cumulative Return for the portfolio.
+        
         Args:
-            portfolio_values (pd.Series): A pandas Series representing portfolio values over time.
-
+            market_data (Dict[str, pd.DataFrame]): Market data for each asset.
+        
         Returns:
             float: The Cumulative Return.
         """
-        start_value = portfolio_values.iloc[0]
-        end_value = portfolio_values.iloc[-1]
-        cumulative_return = (end_value - start_value) / start_value
-        return cumulative_return
+        portfolio_values = self.create_portfolio_value_series(market_data)
+        return (portfolio_values.iloc[-1] - portfolio_values.iloc[0]) / portfolio_values.iloc[0]
 
-    def calculate_profit_factor(self, trades):
-        """
-        Calculate the Profit Factor from a series of executed trades.
 
-        Args:
-            trades (list): A list of dictionaries containing trade details.
+    def calculate_profit_factor(self, trades: List[Dict]) -> float:
+        if not trades:
+            return np.nan  # or raise an exception
 
-        Returns:
-            float: The Profit Factor, calculated as total profit divided by total loss.
-        """
-        total_profit = 0
-        total_loss = 0
-
-        for trade in trades:
-            if trade['status'] == 'closed':
-                profit = (trade['exit_price'] - trade['entry_price']) * trade['amount']
-                profit -= (trade['entry_fee'] + trade['exit_fee'])  # Subtract fees
-
-                if profit > 0:
-                    total_profit += profit
-                else:
-                    total_loss += abs(profit)
-
+        total_profit = sum(trade['profit'] for trade in trades if trade['profit'] > 0)
+        total_loss = sum(abs(trade['profit']) for trade in trades if trade['profit'] < 0)
+        
         if total_loss == 0:
-            return np.inf  # To avoid division by zero and indicate no losses
+            return np.inf if total_profit > 0 else np.nan
 
-        profit_factor = total_profit / total_loss
-        return profit_factor
+        return total_profit / total_loss
+    
+    def calculate_win_rate(self, trades: List[Dict]) -> float:
+        if not trades:
+            return np.nan  # or raise an exception
 
-    def calculate_win_rate(self, trades):
-        """
-        Calculate the Win Rate from a series of executed trades.
-
-        Args:
-            trades (list): A list of dictionaries containing trade details.
-
-        Returns:
-            float: The Win Rate as a percentage.
-        """
-        winning_trades = 0
-        total_trades = 0
-
-        for trade in trades:
-            if trade['status'] == 'closed':
-                profit = (trade['exit_price'] - trade['entry_price']) * trade['amount']
-                total_trades += 1
-
-                if profit > 0:
-                    winning_trades += 1
-
-        if total_trades == 0:
-            return np.nan  # No trades executed
-
-        win_rate = (winning_trades / total_trades) * 100
-        return win_rate
-
-    def calculate_portfolio_values(self, history, market_prices):
-        """
-        Calculate the portfolio values at each timestamp using the market prices of assets.
-
-        Args:
-            history (list): List of portfolio snapshots, each containing holdings at a given timestamp.
-            market_prices (dict): Dictionary of asset prices at each timestamp.
-
-        Returns:
-            pd.Series: Portfolio values over time indexed by timestamp.
-        """
-        portfolio_values = []
-
-        for snapshot in history:
-            timestamp = snapshot['timestamp']
-            holdings = snapshot['holdings']
-            
-            # Calculate the total value of holdings (base currency + assets)
-            total_value = holdings.get('cash', 0)  # Base currency cash balance
-            
-            for asset, quantity in holdings.items():
-                if asset != 'cash':  # Skip the base currency
-                    try:
-                        # Retrieve the closest available timestamp for the asset price
-                        closest_timestamp = self.get_closest_timestamp(market_prices[asset], timestamp)
-                        
-                        if closest_timestamp is not None:
-                            asset_price = market_prices[asset].loc[closest_timestamp]
-                        else:
-                            self.logger.warning(f"No price data for {asset} at timestamp {timestamp}. Using previous available price.")
-                            continue
-                        
-                        total_value += quantity * asset_price
-                    except KeyError:
-                        self.logger.error(f"Price data missing for asset {asset} at timestamp {timestamp}.")
-            
-            portfolio_values.append({'timestamp': timestamp, 'total_value': total_value})
-
-        # Convert to pandas Series for easier manipulation
-        portfolio_values_df = pd.DataFrame(portfolio_values).set_index('timestamp')['total_value']
-        return portfolio_values_df
-
+        winning_trades = sum(1 for trade in trades if trade['profit'] > 0)
+        return (winning_trades / len(trades)) * 100
+    
     def get_closest_timestamp(self, data, target_timestamp):
         """
         Retrieve the closest timestamp before the target timestamp from the DataFrame.
@@ -182,35 +116,23 @@ class MetricsModule:
         closest_timestamp = available_timestamps[available_timestamps <= target_timestamp].max()
         return closest_timestamp
 
-    def calculate_trade_summary(self, trades, portfolio_history, market_data, slippage=0.0):
+    def calculate_trade_summary(self, trades: List[Dict], market_data: Dict[str, pd.DataFrame]) -> Dict:
         """
         Calculate a summary of trades executed during the backtest and portfolio performance.
-
+        
         Args:
-            trades (list): List of executed trades.
-            portfolio_history (list): List of portfolio snapshots over time [{'timestamp': ..., 'holdings': {...}}, ...].
-            market_data (dict): Aligned market data for assets.
-            slippage (float): Slippage applied to trades.
-
+            trades (List[Dict]): List of executed trades.
+            market_data (Dict[str, pd.DataFrame]): Market data for assets.
+        
         Returns:
-            dict: A dictionary containing summary statistics including total profit, portfolio value, win rate, 
-                average holding time, and performance metrics.
+            Dict: A dictionary containing summary statistics or an error message if no trades were executed.
         """
+        self.logger.debug(f"Calculating trade summary. Total trades: {len(trades)}")
         if not trades:
-            return {
-                "total_trades": 0,
-                "total_profit": 0,
-                "total_fees": 0,
-                "winning_trades": 0,
-                "losing_trades": 0,
-                "stop_loss_trades": 0,
-                "take_profit_trades": 0,
-                "average_holding_time": 0,
-                "final_portfolio_value": 0,
-                "total_percent_increase": 0,
-                "avg_percent_per_month": 0
-            }
+            return {"error": "No trades were executed during the backtest."}
 
+        portfolio_values = self.create_portfolio_value_series(market_data)
+        
         total_profit = 0
         total_fees = 0
         winning_trades = 0
@@ -220,12 +142,8 @@ class MetricsModule:
         total_holding_time = 0
 
         for trade in trades:
-            market_type = trade.get('market_type', 'spot')  # Default to 'spot' if not set
-            leverage = trade.get('leverage', 1) if market_type == 'futures' else 1  # Apply leverage for futures
-
-            # Adjust exit price with slippage
-            slippage_adjusted_exit_price = trade['exit_price'] * (1 - slippage)
-            profit = ((slippage_adjusted_exit_price - trade['entry_price']) * trade['amount'] * leverage) - trade['entry_fee'] - trade['exit_fee']
+            profit = (trade['exit_price'] - trade['entry_price']) * trade['asset_amount']
+            profit -= (trade['entry_fee'] + trade['exit_fee'])
             total_profit += profit
             total_fees += trade['entry_fee'] + trade['exit_fee']
 
@@ -243,25 +161,13 @@ class MetricsModule:
             total_holding_time += holding_time
 
         avg_holding_time = total_holding_time / len(trades) if trades else 0
+        final_portfolio_value = portfolio_values.iloc[-1]
+        initial_portfolio_value = portfolio_values.iloc[0]
+        total_percent_increase = ((final_portfolio_value - initial_portfolio_value) / initial_portfolio_value) * 100
 
-        # Final Portfolio Value
-        final_portfolio_value = self.calculate_portfolio_value_at_end(portfolio_history, market_data)
-
-        # Initial Portfolio Value
-        initial_portfolio_value = portfolio_history[0]['holdings'].get(self.base_currency, None)
-        
-        # Ensure the initial portfolio value is valid
-        if initial_portfolio_value is None or initial_portfolio_value == 0:
-            self.logger.warning("Initial portfolio value is zero or not found. Skipping percent increase calculation.")
-            total_percent_increase = 0
-            avg_percent_per_month = 0
-        else:
-            # Total Percentage Increase
-            total_percent_increase = ((final_portfolio_value - initial_portfolio_value) / initial_portfolio_value) * 100
-
-            # Average Percent Per Month
-            total_duration_in_days = (portfolio_history[-1]['timestamp'] - portfolio_history[0]['timestamp']) / (1000 * 60 * 60 * 24)  # Convert to days
-            avg_percent_per_month = (total_percent_increase / total_duration_in_days) * 30  # Adjust for monthly return
+        # Calculate average percent per month
+        total_days = (portfolio_values.index[-1] - portfolio_values.index[0]).days
+        avg_percent_per_month = (total_percent_increase / total_days) * 30
 
         return {
             "total_trades": len(trades),
@@ -271,13 +177,11 @@ class MetricsModule:
             "losing_trades": losing_trades,
             "stop_loss_trades": stop_loss_trades,
             "take_profit_trades": take_profit_trades,
-            "average_holding_time": avg_holding_time / 60000,  # Convert milliseconds to minutes
+            "average_holding_time": avg_holding_time / (1000 * 60),  # Convert to minutes
             "final_portfolio_value": final_portfolio_value,
             "total_percent_increase": total_percent_increase,
             "avg_percent_per_month": avg_percent_per_month
         }
-
-
 
     def calculate_portfolio_value_at_end(self, portfolio_history, market_data):
         """

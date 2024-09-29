@@ -1,4 +1,4 @@
-import logging
+from src.logger import setup_logger
 import pandas as pd
 from typing import Dict, List, Any
 from src.data_preprocessor import DataPreprocessor
@@ -14,14 +14,11 @@ class BacktestEngine:
 
     def __init__(self, assets: Dict[str, str], strategies: Dict[str, Any], portfolio, trade_manager, 
                  base_currency: str = "USD", slippage: float = 0.0, latency: int = 0, 
-                 metrics: MetricsModule = None, signal_database=SignalDatabase(), debug_mode: bool = False):
+                 metrics: MetricsModule = None, signal_database=SignalDatabase()):
         """
         Initialize the BacktestEngine with the given parameters.
         """
-        self.logger = logging.getLogger(__name__)
-        self.debug_mode = debug_mode
-        if self.debug_mode:
-            self.logger.setLevel(logging.DEBUG)
+        self.logger = setup_logger('backtest_engine')
         
         self._validate_inputs(assets, strategies, portfolio, trade_manager, base_currency, slippage, latency)
         
@@ -34,14 +31,11 @@ class BacktestEngine:
         self.latency = latency
         self.market_data: Dict[str, pd.DataFrame] = {}
         self.unified_timestamps: List[int] = []
-        self.metrics = metrics if metrics else MetricsModule(base_currency=base_currency)
+        self.metrics = metrics
         self.signal_database = signal_database
 
         self.logger.info("BacktestEngine initialized with %d assets and %d strategies", 
                          len(assets), len(strategies))
-        if self.debug_mode:
-            self.logger.debug("Debug mode is ON. Verbose logging enabled.")
-            self.logger.debug("Initialized attributes: %s", vars(self))
 
     def _validate_inputs(self, assets, strategies, portfolio, trade_manager, base_currency, slippage, latency):
         """Validate input parameters for the BacktestEngine."""
@@ -78,8 +72,6 @@ class BacktestEngine:
                 data = preprocessor.preprocess_data(required_indicators)
                 self.market_data[asset_name] = data
                 self.logger.info("Data preprocessed successfully for asset: %s", asset_name)
-                if self.debug_mode:
-                    self.logger.debug("Preprocessed data shape for %s: %s", asset_name, data.shape)
             except Exception as e:
                 self.logger.error("Error preprocessing data for %s: %s", asset_name, str(e), exc_info=True)
                 raise
@@ -90,8 +82,6 @@ class BacktestEngine:
 
         self.unified_timestamps = sorted(set(ts for asset in self.market_data.values() for ts in asset.index))
         self.logger.info("Unified timestamps generated with %d entries.", len(self.unified_timestamps))
-        if self.debug_mode:
-            self.logger.debug("First 5 timestamps: %s", self.unified_timestamps[:5])
 
     def run_backtest(self) -> None:
         """Run the backtest across all unified timestamps."""
@@ -106,17 +96,16 @@ class BacktestEngine:
         self._log_initial_state()
 
         for i, timestamp in enumerate(self.unified_timestamps):
-            if i % (total_timestamps // 10) == 0:
-                self.logger.info("Backtest progress: %.1f%%", (i / total_timestamps * 100))
-            
-            if self.debug_mode:
-                self.logger.debug("Processing timestamp: %d", timestamp)
+            if i % (total_timestamps // 100) == 0:
+                print(f"Backtest progress: {(i / total_timestamps * 100):.1f}%")
 
             try:
                 self._process_timestamp(timestamp)
-
             except Exception as e:
                 self.logger.error("Error during backtest at timestamp %d: %s", timestamp, str(e), exc_info=True)
+
+        # Close all open trades at the end of the backtest
+        self._close_all_open_trades(self.unified_timestamps[-1])
 
         self.log_final_summary()
 
@@ -146,6 +135,9 @@ class BacktestEngine:
         if all_signals:
             self.logger.debug("Processing %d signals at timestamp %d", len(all_signals), timestamp)
             self._process_signals(all_signals, market_prices, timestamp)
+        
+        # 5. Store the portfolio history
+        self.portfolio.store_history(timestamp)
 
     def _check_stop_loss_take_profit(self, asset_name: str, current_price: float, timestamp: int) -> List[Dict[str, Any]]:
         """Check for stop loss and take profit conditions for open trades of a specific asset."""
@@ -160,9 +152,6 @@ class BacktestEngine:
             elif trade['take_profit'] is not None and current_price >= trade['take_profit']:
                 self.logger.info("Take profit triggered for trade %d at price %.8f", trade['id'], current_price)
                 close_signals.append(self._generate_close_signal(trade, current_price, timestamp, "take_profit"))
-
-        if self.debug_mode and close_signals:
-            self.logger.debug("Generated %d close signals for asset %s", len(close_signals), asset_name)
 
         return close_signals
 
@@ -204,16 +193,12 @@ class BacktestEngine:
             signals = [signals] if isinstance(signals, dict) else signals
             for signal in signals:
                 signal['timestamp'] = timestamp
-            
-            if self.debug_mode:
-                self.logger.debug("Generated %d signals for asset %s: %s", len(signals), asset_name, signals)
 
         return signals
 
     def _process_signals(self, signals: List[Dict[str, Any]], market_prices: Dict[str, float], timestamp: int) -> None:
         """Process a batch of trading signals."""
         self.logger.debug("Processing %d signals at timestamp %d", len(signals), timestamp)
-        
         self.signal_database.add_signals(signals)
         
         try:
@@ -243,14 +228,61 @@ class BacktestEngine:
             if asset != self.base_currency:
                 self.logger.info("Asset %s: %.8f", asset, amount)
 
-    def log_final_summary(self) -> None:
-        """Log the final summary of the backtest."""
-        # Print all the signals from the database
-        self.signal_database.get_signals()
-        self.logger.info("Final signals:")
-        for _, signal in self.signal_database.get_signals().iterrows():
-            # Print all dataset columns ( one line = one signal)
-            self.logger.info(f"Signal ID: {signal['signal_id']} at timestamp {signal['timestamp']} for assset {signal['asset_name']}")
-            self.logger.info(f"Action: {signal['action']} Amount: {signal['amount']} Price: {signal['price']}")
-            self.logger.info(f"Stop Loss: {signal['stop_loss']} Take Profit: {signal['take_profit']} Trailing Stop: {signal['trailing_stop']}")
-            self.logger.info(f"Status: {signal['status']} Reason: {signal['reason']}")
+    def log_final_summary(self):
+        self.logger.info("Generating final backtest summary...")
+
+        try:
+            # Calculate metrics
+            sharpe_ratio = self.metrics.calculate_sharpe_ratio(self.market_data)
+            max_drawdown = self.metrics.calculate_max_drawdown(self.market_data)
+            cumulative_return = self.metrics.calculate_cumulative_return(self.market_data)
+            profit_factor = self.metrics.calculate_profit_factor(self.trade_manager.get_trade())
+            win_rate = self.metrics.calculate_win_rate(self.trade_manager.get_trade())
+            
+            # Get trade summary
+            trade_summary = self.metrics.calculate_trade_summary(self.trade_manager.get_trade(), self.market_data)
+
+            if "error" in trade_summary:
+                self.logger.warning(trade_summary["error"])
+                return
+
+            # Log results
+            self.logger.info(f"Sharpe Ratio: {sharpe_ratio:.4f}")
+            self.logger.info(f"Maximum Drawdown: {max_drawdown:.2%}")
+            self.logger.info(f"Cumulative Return: {cumulative_return:.2%}")
+            self.logger.info(f"Profit Factor: {profit_factor:.4f}")
+            self.logger.info(f"Win Rate: {win_rate:.2%}")
+            self.logger.info("Trade Summary:")
+            for key, value in trade_summary.items():
+                self.logger.info(f"  {key}: {value}")
+
+        except ValueError as e:
+            self.logger.warning(f"Unable to generate summary: {str(e)}")
+
+        self.logger.info("Backtest summary generation completed.")
+
+    def _close_all_open_trades(self, final_timestamp: int) -> None:
+        """
+        Close all open trades at the end of the backtest.
+
+        Args:
+            final_timestamp (int): The timestamp of the last data point in the backtest.
+        """
+        self.logger.info("Closing all open trades at the end of the backtest.")
+        open_trades = self.trade_manager.get_trade(status='open')
+        self.logger.debug(f"Found {len(open_trades)} open trades to close.")
+        close_signals = []
+
+        for trade in open_trades:
+            asset_name = trade['asset_name']
+            current_price = self.market_data[asset_name].loc[final_timestamp, 'close']
+            
+            close_signal = self._generate_close_signal(trade, current_price, final_timestamp, "end_of_backtest")
+            close_signals.append(close_signal)
+
+        if close_signals:
+            self.logger.info(f"Generated {len(close_signals)} close signals at the end of backtest.")
+            market_prices = {asset: self.market_data[asset].loc[final_timestamp, 'close'] for asset in self.market_data}
+            self._process_signals(close_signals, market_prices, final_timestamp)
+        else:
+            self.logger.info("No open trades to close at the end of the backtest.")

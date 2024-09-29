@@ -1,9 +1,9 @@
-import logging
+from src.logger import setup_logger
 from typing import Dict, List, Any
-from src.trade_manager import TradeManager
+
 
 class Portfolio:
-    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], signal_database : None, base_currency: str):
+    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], signal_database : None, trade_manager: None, base_currency: str):
         """
         Initialize the portfolio with the given initial cash balance, base currency, and portfolio configurations.
 
@@ -17,8 +17,8 @@ class Portfolio:
         self.holdings = {base_currency: initial_cash}
         self.history: List[Dict] = []
         self.portfolio_config = portfolio_config
-        self.trade_manager = TradeManager()
-        self.logger = logging.getLogger(__name__)
+        self.trade_manager = trade_manager
+        self.logger = setup_logger('portfolio')
         self.signal_database = signal_database
 
         self._validate_portfolio_config(portfolio_config)
@@ -94,6 +94,8 @@ class Portfolio:
             'timestamp': timestamp,
             'holdings': self.holdings.copy()
             })
+        open_trades = self.trade_manager.get_trade(status='open')
+        self.logger.debug(f"After processing signals at {timestamp}, open trades: {len(open_trades)}")
 
     def validate_signal(self, signal: Dict, market_prices: Dict[str, float]) -> bool:
         """
@@ -134,7 +136,7 @@ class Portfolio:
             new_exposure = (amount * price) / portfolio_value
 
             if current_exposure + new_exposure > max_exposure:
-                self.logger.warning(f"Max exposure limit reached for {asset}.")
+                self.logger.info(f"Max exposure limit reached for {asset}.")
                 return False
 
             # Spot market validation
@@ -146,7 +148,7 @@ class Portfolio:
                 elif action == 'sell' and self.holdings.get(asset, 0.0) >= amount:
                     return True
                 else:
-                    self.logger.warning(f"Not enough {self.base_currency} or holdings for the trade.")
+                    self.logger.info(f"Not enough {self.base_currency} or holdings for the trade.")
 
             # Futures market validation (can be expanded)
             elif market_type == 'futures':
@@ -194,6 +196,7 @@ class Portfolio:
                 direction=signal['action'],
                 entry_reason=entry_reason
             )
+            self.logger.debug(f"Trade executed: {trade}")
             # Update signal status
             self.signal_database.update_signal_status(signal['signal_id'], 'executed')
 
@@ -345,3 +348,10 @@ class Portfolio:
         exposure = (self.holdings[asset] * market_prices[asset]) / portfolio_value
         self.logger.info(f"Current exposure for {asset}: {exposure:.2%}")
         return exposure
+
+    def store_history(self, timestamp: int) -> None:
+        """Store the current portfolio state in the history."""
+        self.history.append({
+            'timestamp': timestamp,
+            'holdings': self.holdings.copy()
+            })

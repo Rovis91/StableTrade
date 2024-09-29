@@ -1,4 +1,4 @@
-import logging
+from src.logger import setup_logger
 import pandas as pd
 from typing import Dict, List, Any, Optional
 
@@ -13,7 +13,7 @@ class SignalDatabase:
             'stop_loss', 'take_profit', 'trailing_stop', 'status',
             'trade_id', 'signal_id', 'reason'
         ])
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger('signal_database')
 
     def add_signals(self, signals: List[Dict[str, Any]]) -> None:
         """

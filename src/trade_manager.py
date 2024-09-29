@@ -1,4 +1,4 @@
-import logging
+from src.logger import setup_logger
 from typing import Dict, List, Optional, Any
 
 class TradeManager:
@@ -9,10 +9,11 @@ class TradeManager:
     Each trade includes stop-loss, take-profit, and trailing stop values (all in market prices, except trailing stop).
     """
 
-    def __init__(self):
+    def __init__(self, base_currency: str = "USD"):
         self.trades: List[Dict[str, Any]] = []  # Stores all trades, both open and closed
         self.trade_counter: int = 0  # Counter for generating unique trade IDs
-        self.logger = logging.getLogger(__name__)
+        self.base_currency = base_currency
+        self.logger = setup_logger('trade_manager')
 
     def open_trade(self, asset_name: str, base_currency: str, asset_amount: float, 
                    base_amount: float, entry_price: float, entry_timestamp: int, 

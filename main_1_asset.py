@@ -1,4 +1,3 @@
-import logging
 from typing import Dict
 from src.backtest_engine import BacktestEngine
 from src.portfolio import Portfolio
@@ -6,26 +5,16 @@ from src.trade_manager import TradeManager
 from src.strategy.depeg_strategy import DepegStrategy
 from src.signal_database import SignalDatabase
 from src.metrics import MetricsModule
+from src.logger import setup_logger, set_log_levels
 import os
 
-def setup_logging() -> logging.Logger:
-    """
-    Setup logging configuration for the application.
-
-    Returns:
-        logging.Logger: Configured logger instance.
-    """
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
-    return logger
-
-def verify_files_exist(assets: Dict[str, str], logger: logging.Logger) -> bool:
+def verify_files_exist(assets: Dict[str, str], logger) -> bool:
     """
     Verify if the CSV files for each asset exist at the specified paths.
 
     Args:
         assets (Dict[str, str]): A dictionary with asset names as keys and their file paths as values.
-        logger (logging.Logger): Logger instance for logging errors.
+        logger: Logger instance for logging errors.
 
     Returns:
         bool: True if all files exist, False otherwise.
@@ -37,16 +26,28 @@ def verify_files_exist(assets: Dict[str, str], logger: logging.Logger) -> bool:
     logger.info("All asset files verified successfully.")
     return True
 
-def main():
+def main(log_levels: Dict[str, str] = None):
     """
     Main function to run the backtesting process.
 
-    This function sets up the environment, initializes necessary components,
+    Args:
+        log_levels (Dict[str, str]): A dictionary of component names and their log levels.
+
+    This function sets up the environment, initializes necessary components with specified log levels,
     and executes the backtest. It also handles error logging and signal analysis.
     """
-    # Setup logging
-    logger = setup_logging()
-    logger.info("Starting the backtesting process.")
+    initial_cash = 100000  # Example initial cash
+    base_currency = 'EUR'
+
+    if log_levels is None:
+        log_levels = {}
+
+    # Set log levels for all components
+    set_log_levels(log_levels)
+
+    # Setup main logging
+    main_logger = setup_logger('main')
+    main_logger.warning("Starting the backtesting process.")
 
     # Define the assets and their corresponding CSV data paths
     assets = {
@@ -54,14 +55,14 @@ def main():
     }
 
     # Verify if all required files exist before proceeding
-    if not verify_files_exist(assets, logger):
-        logger.error("File verification failed. Exiting the process.")
+    if not verify_files_exist(assets, main_logger):
+        main_logger.error("File verification failed. Exiting the process.")
         return
 
     # Initialize components
-    trade_manager = TradeManager()
+    trade_manager = TradeManager(base_currency=base_currency)
     signal_database = SignalDatabase()
-    logger.info("Trade manager and signal database initialized.")
+    main_logger.warning("Trade manager and signal database initialized.")
 
     # Initialize strategies for the asset
     strategies = {
@@ -69,13 +70,13 @@ def main():
             market='EUTEUR',
             trade_manager=trade_manager,
             depeg_threshold=8,
-            trade_amount=0.1,  # 10% of portfolio cash available
-            stop_loss=0.02,  # 2% stop loss
-            take_profit=0.05,  # 5% take profit
-            trailing_stop=0.01  # 1% trailing stop
+            trade_amount=0.1,
+            stop_loss=0.02,
+            take_profit=0.05,
+            trailing_stop=0.01
         )
     }
-    logger.info(f"Strategies initialized for {', '.join(strategies.keys())}.")
+    main_logger.warning(f"Strategies initialized for {', '.join(strategies.keys())}.")
 
     # Generate portfolio config
     portfolio_config = {
@@ -88,19 +89,18 @@ def main():
     }
 
     # Initialize portfolio
-    initial_cash = 100000  # Example initial cash
-    base_currency = 'EUR'
     portfolio = Portfolio(
         initial_cash=initial_cash,
         portfolio_config=portfolio_config,
         signal_database=signal_database,
+        trade_manager=trade_manager,
         base_currency=base_currency
     )
-    logger.info(f"Portfolio initialized with {initial_cash} {base_currency}.")
+    main_logger.warning(f"Portfolio initialized with {initial_cash} {base_currency}.")
 
     # Initialize MetricsModule
-    metrics_module = MetricsModule(base_currency=base_currency)
-    logger.info("Metrics module initialized.")
+    metrics_module = MetricsModule(portfolio=portfolio, base_currency=base_currency)
+    main_logger.warning("Metrics module initialized.")
 
     # Initialize the backtest engine
     backtest_engine = BacktestEngine(
@@ -113,23 +113,33 @@ def main():
         metrics=metrics_module,
         signal_database=signal_database
     )
-    logger.info("Backtest engine initialized.")
+    main_logger.warning("Backtest engine initialized.")
 
     try:
         # Preprocess the data
-        logger.info("Starting data preprocessing...")
+        main_logger.warning("Starting data preprocessing...")
         backtest_engine.preprocess_data()
-        logger.info("Data preprocessing completed successfully.")
+        main_logger.warning("Data preprocessing completed successfully.")
 
         # Run the backtest
-        logger.info("Starting backtest execution...")
+        main_logger.warning("Starting backtest execution...")
         backtest_engine.run_backtest()
-        logger.info("Backtest completed successfully.")
+        main_logger.warning("Backtest completed successfully.")
 
     except Exception as e:
-        logger.error(f"An error occurred during the backtest: {e}", exc_info=True)
+        main_logger.error(f"An error occurred during the backtest: {e}", exc_info=True)
     
-    logger.info("Backtesting process completed.")
+    main_logger.warning("Backtesting process completed.")
 
 if __name__ == "__main__":
-    main()
+    # Example of setting different log levels for components
+    custom_log_levels = {
+        'main': 'WARNING',
+        'trade_manager': 'INFO',
+        'signal_database': 'WARNING',
+        'depeg_strategy': 'WARNING',
+        'portfolio': 'WARNING',
+        'metrics': 'WARNING',
+        'backtest_engine': 'WARNING'
+    }
+    main(custom_log_levels)
