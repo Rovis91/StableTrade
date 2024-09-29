@@ -1,24 +1,58 @@
 from src.logger import setup_logger
 import pandas as pd
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from src.data_preprocessor import DataPreprocessor
 from src.metrics import MetricsModule
 from src.signal_database import SignalDatabase
+import uuid
+from tqdm import tqdm
+
 
 class BacktestEngine:
     """
     A class to run backtests on trading strategies for multiple assets.
 
     This engine preprocesses data, runs strategies, manages trades, and calculates performance metrics.
+
+    Attributes:
+        assets (Dict[str, str]): A dictionary mapping asset names to their corresponding CSV paths.
+        strategies (Dict[str, Any]): A dictionary mapping asset names to their strategy objects.
+        portfolio: Portfolio instance for managing asset holdings.
+        trade_manager: TradeManager instance for managing trades.
+        base_currency (str): The base currency for trading (default: 'USD').
+        slippage (float): The slippage rate to apply to trades.
+        latency (int): The simulated latency (in milliseconds) to apply to trade execution.
+        metrics (MetricsModule): An instance of MetricsModule for calculating performance metrics.
+        signal_database (SignalDatabase): An instance of SignalDatabase for storing and retrieving signals.
     """
+
+    STATUS_OPEN = 'open'
+    STATUS_CLOSED = 'closed'
+    BUY = 'buy'
+    SELL = 'sell'
+    LONG = 'long'
+    SHORT = 'short'
 
     def __init__(self, assets: Dict[str, str], strategies: Dict[str, Any], portfolio, trade_manager, 
                  base_currency: str = "USD", slippage: float = 0.0, latency: int = 0, 
-                 metrics: MetricsModule = None, signal_database=SignalDatabase()):
+                 metrics: Optional[MetricsModule] = None, signal_database: Optional[SignalDatabase] = None,
+                 logger: Optional[Any] = None):
         """
         Initialize the BacktestEngine with the given parameters.
+
+        Args:
+            assets (Dict[str, str]): Dictionary mapping asset names to CSV file paths.
+            strategies (Dict[str, Any]): Dictionary mapping asset names to strategy instances.
+            portfolio: Instance managing portfolio operations.
+            trade_manager: Instance managing trade operations.
+            base_currency (str): The base currency for trading.
+            slippage (float): The slippage rate for trades.
+            latency (int): The simulated latency for trade execution.
+            metrics (Optional[MetricsModule]): MetricsModule instance for calculating performance metrics.
+            signal_database (Optional[SignalDatabase]): SignalDatabase instance for storing signals.
+            logger (Optional[logging.Logger]): Custom logger for BacktestEngine logging.
         """
-        self.logger = setup_logger('backtest_engine')
+        self.logger = logger if logger else setup_logger('backtest_engine')
         
         self._validate_inputs(assets, strategies, portfolio, trade_manager, base_currency, slippage, latency)
         
@@ -32,28 +66,27 @@ class BacktestEngine:
         self.market_data: Dict[str, pd.DataFrame] = {}
         self.unified_timestamps: List[int] = []
         self.metrics = metrics
-        self.signal_database = signal_database
+        self.signal_database = signal_database if signal_database else SignalDatabase(logger=self.logger)
 
         self.logger.info("BacktestEngine initialized with %d assets and %d strategies", 
                          len(assets), len(strategies))
 
     def _validate_inputs(self, assets, strategies, portfolio, trade_manager, base_currency, slippage, latency):
         """Validate input parameters for the BacktestEngine."""
-        try:
-            assert isinstance(assets, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in assets.items()), \
-                "Assets must be a dictionary with string keys and values."
-            assert isinstance(strategies, dict) and all(isinstance(k, str) for k in strategies.keys()), \
-                "Strategies must be a dictionary with string keys."
-            assert hasattr(portfolio, 'process_signals') and callable(getattr(portfolio, 'process_signals')), \
-                "Portfolio must have a 'process_signals' method."
-            assert hasattr(trade_manager, 'get_trade') and callable(getattr(trade_manager, 'get_trade')), \
-                "TradeManager must have a 'get_trade' method."
-            assert isinstance(base_currency, str), "Base currency must be a string."
-            assert isinstance(slippage, (int, float)) and slippage >= 0, "Slippage must be a non-negative number."
-            assert isinstance(latency, int) and latency >= 0, "Latency must be a non-negative integer."
-        except AssertionError as e:
-            self.logger.error("Input validation failed: %s", str(e))
-            raise ValueError(str(e))
+        if not (isinstance(assets, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in assets.items())):
+            raise ValueError("Assets must be a dictionary with string keys and values.")
+        if not (isinstance(strategies, dict) and all(isinstance(k, str) for k in strategies.keys())):
+            raise ValueError("Strategies must be a dictionary with string keys.")
+        if not (hasattr(portfolio, 'process_signals') and callable(getattr(portfolio, 'process_signals'))):
+            raise ValueError("Portfolio must have a 'process_signals' method.")
+        if not (hasattr(trade_manager, 'get_trade') and callable(getattr(trade_manager, 'get_trade'))):
+            raise ValueError("TradeManager must have a 'get_trade' method.")
+        if not isinstance(base_currency, str):
+            raise ValueError("Base currency must be a string.")
+        if not (isinstance(slippage, (int, float)) and slippage >= 0):
+            raise ValueError("Slippage must be a non-negative number.")
+        if not (isinstance(latency, int) and latency >= 0):
+            raise ValueError("Latency must be a non-negative integer.")
 
         self.logger.debug("Input validation completed successfully")
 
@@ -95,10 +128,7 @@ class BacktestEngine:
 
         self._log_initial_state()
 
-        for i, timestamp in enumerate(self.unified_timestamps):
-            if i % (total_timestamps // 100) == 0:
-                print(f"Backtest progress: {(i / total_timestamps * 100):.1f}%")
-
+        for timestamp in tqdm(self.unified_timestamps, desc="Backtesting Progress"):
             try:
                 self._process_timestamp(timestamp)
             except Exception as e:
@@ -142,7 +172,7 @@ class BacktestEngine:
     def _check_stop_loss_take_profit(self, asset_name: str, current_price: float, timestamp: int) -> List[Dict[str, Any]]:
         """Check for stop loss and take profit conditions for open trades of a specific asset."""
         close_signals = []
-        active_trades = [trade for trade in self.trade_manager.get_trade(status='open') 
+        active_trades = [trade for trade in self.trade_manager.get_trade(status=self.STATUS_OPEN) 
                          if trade['asset_name'] == asset_name]
         
         for trade in active_trades:
@@ -157,7 +187,7 @@ class BacktestEngine:
 
     def _update_trailing_stops(self, asset_name: str, current_price: float) -> None:
         """Update trailing stops for open trades of a specific asset."""
-        active_trades = [trade for trade in self.trade_manager.get_trade(status='open') 
+        active_trades = [trade for trade in self.trade_manager.get_trade(status=self.STATUS_OPEN) 
                          if trade['asset_name'] == asset_name]
         
         for trade in active_trades:
@@ -165,13 +195,13 @@ class BacktestEngine:
                 trailing_stop_pct = trade['trailing_stop'] / 100
                 current_stop_loss = trade['stop_loss']
 
-                if trade['direction'] in ['buy', 'long']:
+                if trade['direction'] in [self.BUY, self.LONG]:
                     new_stop_loss = current_price * (1 - trailing_stop_pct)
                     if new_stop_loss > current_stop_loss:
                         self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
                         self.logger.info("Updated trailing stop for trade %d (%s). New stop loss: %.8f", 
                                          trade['id'], asset_name, new_stop_loss)
-                elif trade['direction'] in ['sell', 'short']:
+                elif trade['direction'] in [self.SELL, self.SHORT]:
                     new_stop_loss = current_price * (1 + trailing_stop_pct)
                     if new_stop_loss < current_stop_loss:
                         self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
@@ -181,7 +211,7 @@ class BacktestEngine:
     def _generate_strategy_signals(self, asset_name: str, row_data: pd.Series, current_price: float, timestamp: int) -> List[Dict[str, Any]]:
         """Generate strategy signals for a specific asset."""
         strategy = self.strategies[asset_name]
-        active_trades = [trade for trade in self.trade_manager.get_trade(status='open') 
+        active_trades = [trade for trade in self.trade_manager.get_trade(status=self.STATUS_OPEN) 
                          if trade['asset_name'] == asset_name]
         
         portfolio_value = self.portfolio.get_total_value({asset_name: current_price})
@@ -203,7 +233,6 @@ class BacktestEngine:
         
         try:
             self.portfolio.process_signals(signals=signals, market_prices=market_prices, timestamp=timestamp)
-            
             self.logger.debug("Signals processed successfully")
         except Exception as e:
             self.logger.error("Error processing signals: %s", str(e), exc_info=True)
@@ -269,7 +298,7 @@ class BacktestEngine:
             final_timestamp (int): The timestamp of the last data point in the backtest.
         """
         self.logger.info("Closing all open trades at the end of the backtest.")
-        open_trades = self.trade_manager.get_trade(status='open')
+        open_trades = self.trade_manager.get_trade(status=self.STATUS_OPEN)
         self.logger.debug(f"Found {len(open_trades)} open trades to close.")
         close_signals = []
 

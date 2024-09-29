@@ -1,16 +1,32 @@
-from src.logger import setup_logger
 from typing import Dict, List, Optional, Any
+from src.logger import setup_logger
+
 
 class TradeManager:
     """
     TradeManager handles the opening, closing, and management of trades.
     
     It supports both spot and futures markets by tracking the trade direction (buy/sell for spot, long/short for futures).
-    Each trade includes stop-loss, take-profit, and trailing stop values (all in market prices, except trailing stop).
+    Each trade includes details such as entry and exit prices, fees, stop-loss, take-profit, and trailing stops.
+
+    Attributes:
+        trades (List[Dict[str, Any]]): A list storing all trades (both open and closed).
+        trades_by_id (Dict[int, Dict[str, Any]]): A dictionary storing trades indexed by their unique trade IDs for fast retrieval.
+        trade_counter (int): Counter for generating unique trade IDs.
+        base_currency (str): The base currency for trades (e.g., 'USD').
+        logger (logging.Logger): Logger instance for logging trade actions.
     """
+
+    OPEN_STATUS = 'open'
+    CLOSED_STATUS = 'closed'
+    BUY = 'buy'
+    SELL = 'sell'
+    LONG = 'long'
+    SHORT = 'short'
 
     def __init__(self, base_currency: str = "USD"):
         self.trades: List[Dict[str, Any]] = []  # Stores all trades, both open and closed
+        self.trades_by_id: Dict[int, Dict[str, Any]] = {}  # Stores trades indexed by trade ID for fast retrieval
         self.trade_counter: int = 0  # Counter for generating unique trade IDs
         self.base_currency = base_currency
         self.logger = setup_logger('trade_manager')
@@ -19,7 +35,7 @@ class TradeManager:
                    base_amount: float, entry_price: float, entry_timestamp: int, 
                    entry_fee: float, stop_loss: Optional[float] = None, 
                    take_profit: Optional[float] = None, trailing_stop: Optional[float] = None, 
-                   direction: str = "buy", entry_reason: str = "buy_signal") -> Dict[str, Any]:
+                   direction: str = BUY, entry_reason: str = "buy_signal") -> Dict[str, Any]:
         """
         Open a new trade, tracking its entry details and market type (via direction).
         
@@ -39,8 +55,14 @@ class TradeManager:
         
         Returns:
             Dict[str, Any]: A dictionary representing the opened trade.
+        
+        Example:
+            trade = trade_manager.open_trade('BTC', 'USD', 1.0, 40000.0, 40000, 1625140800, 100.0, direction='buy')
         """
+        # Generate a new unique trade ID
         self.trade_counter += 1
+
+        # Define the trade details
         trade = {
             'id': self.trade_counter,
             'asset_name': asset_name,
@@ -53,7 +75,7 @@ class TradeManager:
             'exit_price': None,
             'exit_timestamp': None,
             'exit_fee': None,
-            'status': 'open',
+            'status': self.OPEN_STATUS,
             'direction': direction,
             'stop_loss': stop_loss,
             'take_profit': take_profit,
@@ -61,9 +83,16 @@ class TradeManager:
             'entry_reason': entry_reason,
             'exit_reason': None,
         }
+
+        # Store the trade
         self.trades.append(trade)
-        self.logger.info(f"Trade {self.trade_counter} opened for {asset_amount} {asset_name} "
-                         f"({base_amount} {base_currency}) as {direction} at price {entry_price}.")
+        self.trades_by_id[self.trade_counter] = trade
+
+        # Log the trade opening
+        self.logger.info(
+            f"Trade {self.trade_counter} opened for {asset_amount} {asset_name} "
+            f"({base_amount} {base_currency}) as {direction} at price {entry_price}."
+        )
         return trade
 
     def close_trade(self, trade_id: int, exit_price: float, exit_timestamp: int, 
@@ -81,26 +110,33 @@ class TradeManager:
         Returns:
             Optional[Dict[str, Any]]: The closed trade or None if the trade is not found or already closed.
         """
-        for trade in self.trades:
-            if trade['id'] == trade_id and trade['status'] == 'open':
-                trade['exit_price'] = exit_price
-                trade['exit_timestamp'] = exit_timestamp
-                trade['exit_fee'] = exit_fee
-                trade['status'] = 'closed'
-                trade['exit_reason'] = exit_reason
-                
-                # Calculate profit/loss
-                if trade['direction'] in ['buy', 'long']:
-                    pl_base = (exit_price - trade['entry_price']) * trade['asset_amount'] - trade['entry_fee'] - exit_fee
-                else:  # sell or short
-                    pl_base = (trade['entry_price'] - exit_price) * trade['asset_amount'] - trade['entry_fee'] - exit_fee
-                
-                trade['profit_loss'] = pl_base
-                
-                self.logger.info(f"Trade {trade_id} closed at {exit_price}, reason: {exit_reason}, "
-                                 f"exit_fee: {exit_fee}, profit/loss: {pl_base} {trade['base_currency']}")
-                return trade
+        # Retrieve the trade by ID
+        trade = self.trades_by_id.get(trade_id)
 
+        if trade and trade['status'] == self.OPEN_STATUS:
+            # Update trade details for closure
+            trade['exit_price'] = exit_price
+            trade['exit_timestamp'] = exit_timestamp
+            trade['exit_fee'] = exit_fee
+            trade['status'] = self.CLOSED_STATUS
+            trade['exit_reason'] = exit_reason
+
+            # Calculate profit or loss
+            if trade['direction'] in [self.BUY, self.LONG]:
+                pl_base = (exit_price - trade['entry_price']) * trade['asset_amount'] - trade['entry_fee'] - exit_fee
+            else:  # SELL or SHORT
+                pl_base = (trade['entry_price'] - exit_price) * trade['asset_amount'] - trade['entry_fee'] - exit_fee
+
+            trade['profit_loss'] = pl_base
+
+            # Log trade closure details
+            self.logger.info(
+                f"Trade {trade_id} closed at {exit_price}, reason: {exit_reason}, "
+                f"exit_fee: {exit_fee}, profit/loss: {pl_base} {trade['base_currency']}"
+            )
+            return trade
+
+        # If the trade could not be found or is already closed
         self.logger.error(f"Attempt to close trade {trade_id} failed: trade not found or already closed.")
         return None
 
@@ -117,10 +153,10 @@ class TradeManager:
         """
         # If trade_id is specified, return the trade with that specific ID.
         if trade_id is not None:
-            trade = [trade for trade in self.trades if trade['id'] == trade_id]
+            trade = self.trades_by_id.get(trade_id)
             if not trade:
                 self.logger.warning(f"Trade with ID {trade_id} not found.")
-            return trade
+            return [trade] if trade else []
 
         # If status is specified, return trades with the given status (open or closed).
         if status is not None:
@@ -142,14 +178,22 @@ class TradeManager:
         Returns:
             Optional[Dict[str, Any]]: The modified trade or None if the trade is not found.
         """
-        for trade in self.trades:
-            if trade['id'] == trade_id and trade['status'] == 'open':
-                if stop_loss is not None:
-                    trade['stop_loss'] = stop_loss
-                if take_profit is not None:
-                    trade['take_profit'] = take_profit
-                self.logger.info(f"Modified trade {trade_id}: stop_loss={stop_loss}, take_profit={take_profit}")
-                return trade
+        # Retrieve the trade by ID
+        trade = self.trades_by_id.get(trade_id)
 
+        if trade and trade['status'] == self.OPEN_STATUS:
+            # Update stop loss and/or take profit parameters
+            if stop_loss is not None:
+                trade['stop_loss'] = stop_loss
+            if take_profit is not None:
+                trade['take_profit'] = take_profit
+
+            # Log the modifications
+            self.logger.info(
+                f"Modified trade {trade_id}: stop_loss={stop_loss}, take_profit={take_profit}"
+            )
+            return trade
+
+        # If the trade could not be found or is already closed
         self.logger.error(f"Failed to modify trade {trade_id}: trade not found or already closed.")
         return None

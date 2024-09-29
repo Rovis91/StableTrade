@@ -1,16 +1,36 @@
+import os
+import logging
+from typing import Dict, List
 from src.logger import setup_logger
-from typing import Dict, List, Any
 
 
 class Portfolio:
-    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], signal_database : None, trade_manager: None, base_currency: str):
+    """
+    Portfolio class that manages asset holdings, trade execution, and portfolio performance.
+    This class is responsible for handling incoming trading signals, maintaining a record of trades,
+    and providing metrics related to the portfolio's performance.
+
+    Attributes:
+        base_currency (str): The base currency for the portfolio (e.g., 'EUR', 'USD').
+        holdings (Dict[str, float]): A dictionary storing current holdings of assets and cash.
+        history (List[Dict]): A list that keeps track of portfolio state over time.
+        portfolio_config (Dict[str, Dict]): The configuration of each asset, including market type, fees, etc.
+        trade_manager (TradeManager): The trade manager for handling trades.
+        logger (logging.Logger): Logger instance for logging portfolio activities.
+        signal_database (SignalDatabase): The signal database instance for storing signal data.
+    """
+    REQUIRED_PORTFOLIO_KEYS = {'market_type', 'fees', 'max_trades', 'max_exposure'}
+
+    def __init__(self, initial_cash: float, portfolio_config: Dict[str, Dict], 
+                 signal_database, trade_manager, base_currency: str):
         """
         Initialize the portfolio with the given initial cash balance, base currency, and portfolio configurations.
 
         Args:
             initial_cash (float): Starting cash balance in the base currency.
-            portfolio_config (Dict[str, Dict]): Configuration for each asset (market type, fees, max exposure, etc.)
+            portfolio_config (Dict[str, Dict]): Configuration for each asset (market type, fees, max exposure, etc.).
             signal_database (SignalDatabase): The signal database to store and retrieve signals.
+            trade_manager (TradeManager): The trade manager instance for managing trades.
             base_currency (str): The base currency for the portfolio (e.g., 'EUR', 'USD').
         """
         self.base_currency = base_currency
@@ -21,6 +41,7 @@ class Portfolio:
         self.logger = setup_logger('portfolio')
         self.signal_database = signal_database
 
+        # Validate the portfolio configuration to ensure it has required parameters
         self._validate_portfolio_config(portfolio_config)
 
         self.logger.info(f"Portfolio initialized with {initial_cash} {base_currency}")
@@ -35,10 +56,9 @@ class Portfolio:
         Raises:
             ValueError: If the configuration is invalid.
         """
-        required_keys = {'market_type', 'fees', 'max_trades', 'max_exposure'}
         for asset, asset_config in config.items():
-            if not required_keys.issubset(asset_config.keys()):
-                missing_keys = required_keys - asset_config.keys()
+            if not self.REQUIRED_PORTFOLIO_KEYS.issubset(asset_config.keys()):
+                missing_keys = self.REQUIRED_PORTFOLIO_KEYS - asset_config.keys()
                 error_msg = f"Invalid configuration for asset {asset}. Missing required keys: {missing_keys}"
                 self.logger.error(error_msg)
                 raise ValueError(error_msg)
@@ -90,10 +110,10 @@ class Portfolio:
             except Exception as e:
                 self.logger.error(f"Error processing signal: {e}", exc_info=True)
 
-        self.history.append({
-            'timestamp': timestamp,
-            'holdings': self.holdings.copy()
-            })
+        # Store the current portfolio state in the history for tracking purposes
+        self.store_history(timestamp)
+        
+        # Log the number of open trades after processing signals
         open_trades = self.trade_manager.get_trade(status='open')
         self.logger.debug(f"After processing signals at {timestamp}, open trades: {len(open_trades)}")
 
@@ -162,62 +182,63 @@ class Portfolio:
         return False
 
     def _execute_trade(self, signal: Dict, asset_quantity: float, base_amount: float, asset_price: float, timestamp: int) -> None:
-        """
-        Execute a validated trade and update portfolio holdings.
+            """
+            Execute a validated trade and update portfolio holdings.
 
-        Args:
-            signal (Dict): The validated trade signal containing trade details.
-            asset_quantity (float): The quantity of the asset to trade.
-            base_amount (float): The amount in base currency involved in the trade.
-            asset_price (float): The current price of the asset.
-            timestamp (int): The timestamp of the trade execution.
-        """
-        try:
-            asset_name = signal['asset_name']
-            entry_fee = self.get_fee(asset_name, 'entry')
-            stop_loss = float(signal.get('stop_loss', 0.0))
-            take_profit = float(signal.get('take_profit', 0.0))
-            trailing_stop = float(signal.get('trailing_stop', 0.0))
-            entry_reason = signal.get('reason', 'buy_signal')
+            Args:
+                signal (Dict): The validated trade signal containing trade details.
+                asset_quantity (float): The quantity of the asset to trade.
+                base_amount (float): The amount in base currency involved in the trade.
+                asset_price (float): The current price of the asset.
+                timestamp (int): The timestamp of the trade execution.
+            """
+            try:
+                asset_name = signal['asset_name']
+                entry_fee = self.get_fee(asset_name, 'entry')
+                stop_loss = float(signal.get('stop_loss', 0.0))
+                take_profit = float(signal.get('take_profit', 0.0))
+                trailing_stop = float(signal.get('trailing_stop', 0.0))
+                entry_reason = signal.get('reason', 'buy_signal')
 
-            self.logger.info(f"Executing trade for {asset_name} with action {signal['action']}")
+                self.logger.info(f"Executing trade for {asset_name} with action {signal['action']}")
 
-            trade = self.trade_manager.open_trade(
-                asset_name=asset_name,
-                base_currency=self.base_currency,
-                asset_amount=asset_quantity,
-                base_amount=base_amount,
-                entry_price=asset_price,
-                entry_timestamp=timestamp,
-                entry_fee=entry_fee,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                trailing_stop=trailing_stop,
-                direction=signal['action'],
-                entry_reason=entry_reason
-            )
-            self.logger.debug(f"Trade executed: {trade}")
-            # Update signal status
-            self.signal_database.update_signal_status(signal['signal_id'], 'executed')
+                trade = self.trade_manager.open_trade(
+                    asset_name=asset_name,
+                    base_currency=self.base_currency,
+                    asset_amount=asset_quantity,
+                    base_amount=base_amount,
+                    entry_price=asset_price,
+                    entry_timestamp=timestamp,
+                    entry_fee=entry_fee,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    trailing_stop=trailing_stop,
+                    direction=signal['action'],
+                    entry_reason=entry_reason
+                )
+                self.logger.debug(f"Trade executed: {trade}")
 
-            # Update holdings
-            market_type = self.portfolio_config[asset_name]['market_type']
-            if market_type == 'spot':
-                if signal['action'] == 'buy':
-                    self.holdings[self.base_currency] -= base_amount + entry_fee
-                    self.holdings[asset_name] = self.holdings.get(asset_name, 0.0) + asset_quantity
-                elif signal['action'] == 'sell':
-                    self.holdings[self.base_currency] += base_amount - self.get_fee(asset_name, 'exit')
-                    self.holdings[asset_name] -= asset_quantity
-                    if self.holdings[asset_name] == 0:
-                        del self.holdings[asset_name]
-            elif market_type == 'futures':
-                self.logger.info(f"Futures trade executed for {asset_name}, amount: {asset_quantity}. No direct asset holding updated.")
+                # Update signal status to 'executed' in the signal database
+                self.signal_database.update_signal_status(signal['signal_id'], 'executed')
 
-            self.logger.info(f"Updated holdings after executing trade. New {self.base_currency} balance: {self.holdings[self.base_currency]}")
+                # Update portfolio holdings based on the executed trade
+                market_type = self.portfolio_config[asset_name]['market_type']
+                if market_type == 'spot':
+                    if signal['action'] == 'buy':
+                        self.holdings[self.base_currency] -= base_amount + entry_fee
+                        self.holdings[asset_name] = self.holdings.get(asset_name, 0.0) + asset_quantity
+                    elif signal['action'] == 'sell':
+                        self.holdings[self.base_currency] += base_amount - self.get_fee(asset_name, 'exit')
+                        self.holdings[asset_name] -= asset_quantity
+                        if self.holdings[asset_name] == 0:
+                            del self.holdings[asset_name]
+                elif market_type == 'futures':
+                    self.logger.info(f"Futures trade executed for {asset_name}, amount: {asset_quantity}. No direct asset holding updated.")
 
-        except Exception as e:
-            self.logger.error(f"Error executing trade: {e}", exc_info=True)
+                self.logger.info(f"Updated holdings after executing trade. New {self.base_currency} balance: {self.holdings[self.base_currency]}")
+
+            except Exception as e:
+                self.logger.error(f"Error executing trade: {e}", exc_info=True)
 
     def _close_trade(self, signal: Dict, timestamp: int) -> None:
         """
@@ -350,8 +371,14 @@ class Portfolio:
         return exposure
 
     def store_history(self, timestamp: int) -> None:
-        """Store the current portfolio state in the history."""
+        """
+        Store the current portfolio state in the history.
+
+        Args:
+            timestamp (int): The current timestamp to associate with the portfolio state.
+        """
         self.history.append({
             'timestamp': timestamp,
             'holdings': self.holdings.copy()
-            })
+        })
+        self.logger.debug(f"Portfolio state stored at timestamp {timestamp}")
