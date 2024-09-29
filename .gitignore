@@ -24,6 +24,8 @@ env/
 # Data files
 .csv
 data/*.json
+.prof
+.txt
 
 # Strategy files
 context.md

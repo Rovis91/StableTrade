@@ -80,15 +80,16 @@ class SignalDatabase:
         Returns:
             pd.DataFrame: DataFrame containing the filtered signals.
         """
-        # Create filtering conditions based on provided parameters
-        conditions = [
-            (self.signals['timestamp'] == timestamp) if timestamp is not None else True,
-            (self.signals['asset_name'] == asset_name) if asset_name is not None else True,
-            (self.signals[self.COLUMN_STATUS] == status) if status is not None else True,
-        ]
+        filtered_signals = self.signals
 
-        # Apply the filtering conditions
-        filtered_signals = self.signals.loc[pd.concat(conditions, axis=1).all(axis=1)]
+        if timestamp is not None:
+            filtered_signals = filtered_signals[filtered_signals['timestamp'] == timestamp]
+
+        if asset_name is not None:
+            filtered_signals = filtered_signals[filtered_signals['asset_name'] == asset_name]
+
+        if status is not None:
+            filtered_signals = filtered_signals[filtered_signals[self.COLUMN_STATUS] == status]
 
         self.logger.debug(f"Retrieved {len(filtered_signals)} signals with applied filters.")
         return filtered_signals
