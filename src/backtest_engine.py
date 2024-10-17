@@ -138,6 +138,10 @@ class BacktestEngine:
         self._close_all_open_trades(self.unified_timestamps[-1])
         # save all signals to csv
         self.signal_database.to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/signals.csv")
+        self.trade_manager.save_trades_to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/trades.csv")
+        all_trades = self.trade_manager.get_trade()
+        all_signals = self.signal_database.get_signals()
+        self.metrics.print_summary(self.market_data, all_trades, all_signals)
 
         #self.log_final_summary()
 

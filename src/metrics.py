@@ -178,71 +178,6 @@ class MetricsModule:
         closest_timestamp = available_timestamps[available_timestamps <= target_timestamp].max()
         return closest_timestamp if not pd.isna(closest_timestamp) else None
 
-    def calculate_trade_summary(self, trades: List[Dict], market_data: Dict[str, pd.DataFrame]) -> Dict:
-        """
-        Calculate a summary of trades executed during the backtest and portfolio performance.
-        
-        Args:
-            trades (List[Dict]): List of executed trades.
-            market_data (Dict[str, pd.DataFrame]): Market data for assets.
-        
-        Returns:
-            Dict: A dictionary containing summary statistics or an error message if no trades were executed.
-        """
-        self.logger.debug(f"Calculating trade summary. Total trades: {len(trades)}")
-        if not trades:
-            return {"error": "No trades were executed during the backtest."}
-
-        portfolio_values = self.create_portfolio_value_series(market_data)
-        
-        total_profit, total_fees, winning_trades, losing_trades = 0, 0, 0, 0
-        stop_loss_trades, take_profit_trades, total_holding_time = 0, 0, 0
-
-        for trade in trades:
-            profit = (trade['exit_price'] - trade['entry_price']) * trade['asset_amount']
-            profit -= (trade['entry_fee'] + trade['exit_fee'])
-            total_profit += profit
-            total_fees += trade['entry_fee'] + trade['exit_fee']
-
-            # Count wins and losses
-            if profit > 0:
-                winning_trades += 1
-            else:
-                losing_trades += 1
-
-            # Count stop loss and take profit trades
-            if trade['exit_reason'] == self.STOP_LOSS_REASON:
-                stop_loss_trades += 1
-            elif trade['exit_reason'] == self.TAKE_PROFIT_REASON:
-                take_profit_trades += 1
-
-            # Calculate holding time
-            holding_time = trade['exit_timestamp'] - trade['entry_timestamp']
-            total_holding_time += holding_time
-
-        avg_holding_time = total_holding_time / len(trades) if trades else 0
-        final_portfolio_value = portfolio_values.iloc[-1]
-        initial_portfolio_value = portfolio_values.iloc[0]
-        total_percent_increase = ((final_portfolio_value - initial_portfolio_value) / initial_portfolio_value) * 100
-
-        # Calculate average percent per month
-        total_days = (portfolio_values.index[-1] - portfolio_values.index[0]).days
-        avg_percent_per_month = (total_percent_increase / total_days) * 30
-
-        return {
-            "total_trades": len(trades),
-            "total_profit": total_profit,
-            "total_fees": total_fees,
-            "winning_trades": winning_trades,
-            "losing_trades": losing_trades,
-            "stop_loss_trades": stop_loss_trades,
-            "take_profit_trades": take_profit_trades,
-            "average_holding_time_minutes": avg_holding_time / (1000 * 60),  # Convert to minutes
-            "final_portfolio_value": final_portfolio_value,
-            "total_percent_increase": total_percent_increase,
-            "avg_percent_per_month": avg_percent_per_month
-        }
-
     def calculate_portfolio_value_at_end(self, portfolio_history: List[Dict], market_data: Dict[str, pd.DataFrame]) -> float:
         """
         Calculate the final portfolio value by evaluating asset values at the end of the backtest.
@@ -263,3 +198,123 @@ class MetricsModule:
                 final_portfolio_value += quantity * last_market_prices[asset]
 
         return final_portfolio_value
+
+    def calculate_trade_summary(self, trades: List[Dict], market_data: Dict[str, pd.DataFrame]) -> Dict:
+        """
+        Calculate a summary of trades executed during the backtest and portfolio performance.
+        
+        Args:
+            trades (List[Dict]): List of executed trades.
+            market_data (Dict[str, pd.DataFrame]): Market data for assets.
+        
+        Returns:
+            Dict: A dictionary containing summary statistics or an error message if no trades were executed.
+        """
+        if not trades:
+            return {"error": "No trades were executed during the backtest."}
+
+        portfolio_values = self.create_portfolio_value_series(market_data)
+        
+        total_profit, total_fees, winning_trades, losing_trades = 0, 0, 0, 0
+        stop_loss_trades, take_profit_trades, total_holding_time = 0, 0, 0
+
+        last_timestamp = max(df.index[-1] for df in market_data.values())
+
+        for trade in trades:
+            entry_price = trade['entry_price']
+            exit_price = trade['exit_price'] or market_data[trade['asset_name']].iloc[-1]['close']
+            
+            profit = (exit_price - entry_price) * trade['asset_amount']
+            profit -= (trade['entry_fee'] + (trade['exit_fee'] or 0))
+            total_profit += profit
+            total_fees += trade['entry_fee'] + (trade['exit_fee'] or 0)
+
+            if profit > 0:
+                winning_trades += 1
+            else:
+                losing_trades += 1
+
+            if trade['exit_reason'] == self.STOP_LOSS_REASON:
+                stop_loss_trades += 1
+            elif trade['exit_reason'] == self.TAKE_PROFIT_REASON:
+                take_profit_trades += 1
+
+            exit_timestamp = trade['exit_timestamp'] or last_timestamp
+            holding_time = exit_timestamp - trade['entry_timestamp']
+            total_holding_time += holding_time
+
+        avg_holding_time = total_holding_time / len(trades) if trades else 0
+        final_portfolio_value = portfolio_values.iloc[-1]
+        initial_portfolio_value = portfolio_values.iloc[0]
+        total_percent_increase = ((final_portfolio_value - initial_portfolio_value) / initial_portfolio_value) * 100
+
+        total_days = (portfolio_values.index[-1] - portfolio_values.index[0]).days
+        avg_percent_per_month = (total_percent_increase / total_days) * 30
+
+        return {
+            "total_trades": len(trades),
+            "total_profit": total_profit,
+            "total_fees": total_fees,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "stop_loss_trades": stop_loss_trades,
+            "take_profit_trades": take_profit_trades,
+            "average_holding_time_minutes": avg_holding_time / (60 * 1000),
+            "final_portfolio_value": final_portfolio_value,
+            "total_percent_increase": total_percent_increase,
+            "avg_percent_per_month": avg_percent_per_month
+        }
+    
+    def print_summary(self, market_data: Dict[str, pd.DataFrame], trades: List[Dict], signals: List[Dict]) -> None:
+        """
+        Calculate and print a summary of the backtest results.
+
+        Args:
+            market_data (Dict[str, pd.DataFrame]): Market data for each asset.
+            trades (List[Dict]): List of executed trades.
+            signals (List[Dict]): List of generated signals.
+        """
+        try:
+            sharpe_ratio = self.calculate_sharpe_ratio(market_data)
+            max_drawdown = self.calculate_max_drawdown(market_data)
+            cumulative_return = self.calculate_cumulative_return(market_data)
+            
+            trade_summary = self.calculate_trade_summary(trades, market_data)
+
+            total_trades = len(trades)
+            total_signals = len(signals)
+            assets = list(market_data.keys())
+            initial_balance = self.portfolio.history[0]['holdings'][self.base_currency]
+            final_balance = trade_summary['final_portfolio_value']
+
+            print("\n=== Backtest Summary ===")
+            print(f"Assets: {', '.join(assets)}")
+            print(f"Initial Balance: {initial_balance:.2f} {self.base_currency}")
+            print(f"Final Balance: {final_balance:.2f} {self.base_currency}")
+            print(f"Total Return: {(final_balance - initial_balance):.2f} {self.base_currency} ({cumulative_return:.2%})")
+            print(f"Sharpe Ratio: {sharpe_ratio:.4f}")
+            print(f"Max Drawdown: {max_drawdown:.2%}")
+            print(f"Total Trades: {total_trades}")
+            print(f"Total Signals: {total_signals}")
+            
+            for key, value in trade_summary.items():
+                if isinstance(value, float):
+                    print(f"{key.replace('_', ' ').title()}: {value:.4f}")
+                else:
+                    print(f"{key.replace('_', ' ').title()}: {value}")
+
+            print("========================\n")
+
+            # Sanity checks
+            assert abs(final_balance - trade_summary['final_portfolio_value']) < 0.01, "Final balance mismatch"
+            assert abs(cumulative_return - trade_summary['total_percent_increase'] / 100) < 0.0001, "Cumulative return mismatch"
+
+        except Exception as e:
+            self.logger.error(f"Error calculating metrics summary: {str(e)}", exc_info=True)
+            print(f"Error occurred while calculating metrics summary: {str(e)}")
+            
+            if trades:
+                print("Sample trade:")
+                print(trades[0])
+            else:
+                print("No trades available")

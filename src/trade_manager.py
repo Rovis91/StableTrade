@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Any
 from src.logger import setup_logger
+import csv
 
 class TradeManager:
     """
@@ -174,6 +175,33 @@ class TradeManager:
                 return
 
             with open(filepath, 'w', newline='') as csvfile:
+                fieldnames = list(self.trades[0].keys())
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                writer.writeheader()
+                for trade in self.trades:
+                    writer.writerow(trade)
+
+            self.logger.info(f"Exported {len(self.trades)} trades to {filepath}")
+
+        except Exception as e:
+            self.logger.error(f"Error exporting trades to CSV: {str(e)}")
+            raise
+    
+    def save_trades_to_csv(self, filepath: str) -> None:
+        """
+        Save all trades (both open and closed) to a CSV file.
+
+        Args:
+            filepath (str): The path where the CSV file will be saved.
+        """
+        try:
+            if not self.trades:
+                self.logger.warning("No trades to export.")
+                return
+
+            with open(filepath, 'w', newline='') as csvfile:
+                # Assuming all trades have the same keys, use the first trade to get the fieldnames
                 fieldnames = list(self.trades[0].keys())
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
