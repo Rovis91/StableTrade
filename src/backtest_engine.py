@@ -67,7 +67,6 @@ class BacktestEngine:
         self.unified_timestamps: List[int] = []
         self.metrics = metrics
         self.signal_database = signal_database
-        self.process_signals_count = 0 
 
         self.logger.info("BacktestEngine initialized with %d assets and %d strategies", 
                          len(assets), len(strategies))
@@ -137,9 +136,8 @@ class BacktestEngine:
 
         # Close all open trades at the end of the backtest
         self._close_all_open_trades(self.unified_timestamps[-1])
-        print(f"Processed {self.process_signals_count} signals")
         # save all signals to csv
-        self.signal_database.signals.to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/signals.csv")
+        self.signal_database.to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/signals.csv")
 
         #self.log_final_summary()
 
@@ -234,7 +232,6 @@ class BacktestEngine:
         """Process a batch of trading signals."""
         self.logger.debug("Processing %d signals at timestamp %d", len(signals), timestamp)
         self.signal_database.add_signals(signals)
-        self.process_signals_count += 1
         try:
             self.portfolio.process_signals(signals=signals, market_prices=market_prices, timestamp=timestamp)
             self.logger.debug("Signals processed successfully")

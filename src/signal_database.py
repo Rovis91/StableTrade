@@ -1,32 +1,43 @@
-import pandas as pd
-from typing import Dict, List, Any, Optional
 import uuid
+import csv
+from typing import Dict, List, Any, Optional
 from src.logger import setup_logger
-
 
 class SignalDatabase:
     """
-    A database for managing trading signals.
+    A database for managing trading signals using a List of Dictionaries structure.
+
+    This class provides methods for adding, retrieving, and updating trading signals,
+    as well as exporting them to a CSV file. It uses a list of dictionaries for 
+    efficient memory usage and faster operations compared to a pandas DataFrame.
 
     Attributes
     ----------
     STATUS_PENDING : str
-        Default status for newly added signals.
+        Constant representing the pending status for new signals.
     COLUMN_SIGNAL_ID : str
-        Column name for signal ID.
+        Constant for the column name of the signal ID.
     COLUMN_STATUS : str
-        Column name for status.
+        Constant for the column name of the signal status.
     COLUMN_REASON : str
-        Column name for reason of status change.
+        Constant for the column name of the status change reason.
+    columns : dict
+        Dictionary defining the structure and types of signal data.
+    signals : List[Dict[str, Any]]
+        List storing all the signal dictionaries.
+    logger : logging.Logger
+        Logger instance for the SignalDatabase.
 
     Methods
     -------
     add_signals(signals: List[Dict[str, Any]]) -> None
-        Adds new signals to the database.
-    get_signals(**filters) -> pd.DataFrame
-        Retrieves signals based on the provided filters.
+        Add new signals to the database.
+    get_signals(**filters) -> List[Dict[str, Any]]
+        Retrieve signals based on provided filters.
     update_signal_status(signal_id: str, new_status: str, reason: Optional[str] = None) -> None
-        Updates the status of a signal given its ID.
+        Update the status of a specific signal.
+    export_to_csv(filepath: str) -> None
+        Export all signals to a CSV file.
     """
 
     STATUS_PENDING = 'pending'
@@ -34,43 +45,81 @@ class SignalDatabase:
     COLUMN_STATUS = 'status'
     COLUMN_REASON = 'reason'
 
-    def __init__(self, buffer_size: int = 1):  # Buffer size set to 1 for immediate flush
+    def __init__(self):
         """
         Initializes the SignalDatabase.
+        """
+        self.columns = {
+            'timestamp': int,
+            'asset_name': str,
+            'action': str,
+            'amount': float,
+            'price': float,
+            'stop_loss': float,
+            'take_profit': float,
+            'trailing_stop': float,
+            self.COLUMN_SIGNAL_ID: str,
+            self.COLUMN_STATUS: str,
+            'trade_id': int,
+            self.COLUMN_REASON: str
+        }
+        self.signals: List[Dict[str, Any]] = []
+        self.logger = setup_logger('signal_database')
+
+    def _get_default_value(self, dtype: type) -> Any:
+        """
+        Get the default value for a given data type.
 
         Parameters
         ----------
-        buffer_size : int, optional
-            Number of signals to store in memory before flushing to the main DataFrame (default is 1 for immediate flushing).
-        """
-        self.columns = {
-            'timestamp': 'int64',
-            'asset_name': 'str',
-            'action': 'str',
-            'amount': 'float64',
-            'price': 'float64',
-            'stop_loss': 'float64',
-            'take_profit': 'float64',
-            'trailing_stop': 'float64',
-            self.COLUMN_SIGNAL_ID: 'str',
-            self.COLUMN_STATUS: 'str',
-            'trade_id': 'int64',
-            self.COLUMN_REASON: 'str'
-        }
-        self.buffer: List[Dict[str, Any]] = []
-        self.buffer_size = buffer_size
-        self.signals = pd.DataFrame(columns=self.columns.keys()).astype(self.columns)
-        self.logger = setup_logger('signal_database')
+        dtype : type
+            The Python type to get a default value for.
 
+        Returns
+        -------
+        Any
+            The default value for the given type.
+        """
+        if dtype is int:
+            return 0
+        elif dtype is float:
+            return 0.0
+        elif dtype is str:
+            return ''
+        else:
+            return None
 
     def add_signals(self, signals: List[Dict[str, Any]]) -> None:
         """
-        Adds new signals to the database.
+        Add new signals to the database.
+
+        This method processes a list of signal dictionaries, assigns unique IDs,
+        ensures all required fields are present, and adds them to the database.
 
         Parameters
         ----------
         signals : List[Dict[str, Any]]
-            A list of signal dictionaries to be added.
+            A list of dictionaries, each representing a signal to be added.
+
+        Raises
+        ------
+        Exception
+            If there's an error during the signal addition process.
+        """"""
+        Add new signals to the database.
+
+        This method processes a list of signal dictionaries, assigns unique IDs,
+        ensures all required fields are present, and adds them to the database.
+
+        Parameters
+        ----------
+        signals : List[Dict[str, Any]]
+            A list of dictionaries, each representing a signal to be added.
+
+        Raises
+        ------
+        Exception
+            If there's an error during the signal addition process.
         """
         try:
             if not signals:
@@ -80,74 +129,59 @@ class SignalDatabase:
             for signal in signals:
                 # Assign unique ID to each signal
                 signal[self.COLUMN_SIGNAL_ID] = str(uuid.uuid4())
+                signal[self.COLUMN_STATUS] = self.STATUS_PENDING
 
                 # Ensure all required columns are present in each signal with default values
                 for column, dtype in self.columns.items():
                     if column not in signal:
                         signal[column] = self._get_default_value(dtype)
 
-            # Add to buffer and flush immediately
-            self.buffer.extend(signals)
-            self.flush_buffer()
+                # Convert values to the correct type
+                for column, dtype in self.columns.items():
+                    signal[column] = dtype(signal[column])
 
-            # Log added signals
+            # Add signals to the list
+            self.signals.extend(signals)
+
+            self.logger.info(f"Added {len(signals)} new signals to the database.")
             self.logger.debug(f"Added signals: {signals}")
 
         except Exception as e:
             self.logger.error(f"Error adding signals: {str(e)}")
             raise
 
-
-    def flush_buffer(self) -> None:
+    def get_signals(self, **filters) -> List[Dict[str, Any]]:
         """
-        Flushes the buffer to the main signals DataFrame.
-        """
-        try:
-            if not self.buffer:
-                return
+        Retrieve signals based on provided filters.
 
-            new_df = pd.DataFrame(self.buffer)
-            self.buffer = []
-
-            # Ensure all required columns are present
-            missing_columns = set(self.columns.keys()) - set(new_df.columns)
-            for column in missing_columns:
-                new_df[column] = self._get_default_value(self.columns[column])
-
-            # Assign status to pending for all new signals
-            new_df[self.COLUMN_STATUS] = self.STATUS_PENDING
-
-            # Convert columns to specified data types
-            new_df = new_df.astype(self.columns)
-
-            # Concatenate with the original signals DataFrame without changing the index
-            self.signals = pd.concat([self.signals, new_df], ignore_index=True)
-            self.logger.info(f"Flushed {len(new_df)} signals to main DataFrame.")
-
-        except Exception as e:
-            self.logger.error(f"Error flushing buffer: {str(e)}")
-            raise
-
-    def get_signals(self, **filters) -> pd.DataFrame:
-        """
-        Retrieves signals based on the provided filters.
+        This method returns a list of signals that match the given filter criteria.
 
         Parameters
         ----------
-        filters : dict
-            Column-value pairs to filter signals.
+        **filters : dict
+            Keyword arguments representing field-value pairs to filter signals.
 
         Returns
         -------
-        pd.DataFrame
-            A DataFrame of signals that match the provided filters.
+        List[Dict[str, Any]]
+            A list of signal dictionaries that match the filter criteria.
+
+        Raises
+        ------
+        Exception
+            If there's an error during the signal retrieval process.
         """
         try:
             if not filters:
                 return self.signals.copy()
 
-            query_str = " & ".join([f"{col} == @value" for col, value in filters.items() if col in self.signals.columns])
-            return self.signals.query(query_str).copy()
+            filtered_signals = []
+            for signal in self.signals:
+                if all(signal.get(key) == value for key, value in filters.items()):
+                    filtered_signals.append(signal.copy())
+
+            self.logger.info(f"Retrieved {len(filtered_signals)} signals with applied filters.")
+            return filtered_signals
 
         except Exception as e:
             self.logger.error(f"Error filtering signals: {str(e)}")
@@ -155,67 +189,74 @@ class SignalDatabase:
 
     def update_signal_status(self, signal_id: str, new_status: str, reason: Optional[str] = None) -> None:
         """
-        Updates the status of a signal given its ID.
+        Update the status of a specific signal.
+
+        This method finds a signal by its ID and updates its status and optionally the reason.
 
         Parameters
         ----------
         signal_id : str
-            The unique identifier of the signal to be updated.
+            The unique identifier of the signal to update.
         new_status : str
-            The new status to be assigned to the signal.
-        reason : Optional[str]
-            The reason for the status change, if any.
+            The new status to set for the signal.
+        reason : Optional[str], optional
+            The reason for the status change (default is None).
 
         Raises
         ------
         ValueError
-            If the signal ID is not found in the database.
+            If the signal with the given ID is not found.
+        Exception
+            If there's an error during the update process.
         """
         try:
-            # Log the state of signals before attempting update
-            self.logger.debug(f"Signals in database before update: {self.signals[[self.COLUMN_SIGNAL_ID, self.COLUMN_STATUS]].to_dict(orient='records')}")
+            for signal in self.signals:
+                if signal[self.COLUMN_SIGNAL_ID] == signal_id:
+                    signal[self.COLUMN_STATUS] = new_status
+                    if reason is not None:
+                        signal[self.COLUMN_REASON] = reason
+                    self.logger.info(f"Updated signal {signal_id} with new status '{new_status}'.")
+                    return
 
-            # Use a boolean mask to find the rows with the matching signal_id
-            mask = self.signals[self.COLUMN_SIGNAL_ID] == signal_id
-
-            # Check if the signal_id exists in the DataFrame
-            if not mask.any():
-                self.logger.error(f"Signal {signal_id} not found in the database.")
-                raise ValueError(f"Signal {signal_id} not found.")
-
-            # Update the status and reason for the matching signal
-            self.signals.loc[mask, self.COLUMN_STATUS] = new_status
-            if reason is not None:
-                self.signals.loc[mask, self.COLUMN_REASON] = reason
-
-            self.logger.info(f"Updated signal {signal_id} with new status '{new_status}'.")
+            self.logger.error(f"Signal {signal_id} not found in the database.")
+            raise ValueError(f"Signal {signal_id} not found.")
 
         except Exception as e:
             self.logger.error(f"Error updating signal status for signal {signal_id}: {str(e)}")
             raise
-
-
-
-
-    def _get_default_value(self, dtype: str) -> Any:
+    
+    def to_csv(self, filepath: str) -> None:
         """
-        Returns the default value based on the provided data type.
+        Export all signals to a CSV file.
+
+        This method writes all signals in the database to a CSV file at the specified path.
 
         Parameters
         ----------
-        dtype : str
-            The data type for which to return a default value.
+        filepath : str
+            The file path where the CSV will be saved.
 
-        Returns
-        -------
-        Any
-            The default value for the given data type.
+        Raises
+        ------
+        Exception
+            If there's an error during the export process.
         """
-        if 'int' in dtype:
-            return 0
-        elif 'float' in dtype:
-            return 0.0
-        elif 'str' in dtype:
-            return ''
-        else:
-            return None
+        try:
+            if not self.signals:
+                self.logger.warning("No signals to export.")
+                return
+
+            with open(filepath, 'w', newline='') as csvfile:
+                # Assuming all signals have the same keys, use the first signal to get the fieldnames
+                fieldnames = list(self.signals[0].keys())
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                writer.writeheader()
+                for signal in self.signals:
+                    writer.writerow(signal)
+
+            self.logger.info(f"Exported {len(self.signals)} signals to {filepath}")
+
+        except Exception as e:
+            self.logger.error(f"Error exporting signals to CSV: {str(e)}")
+            raise
