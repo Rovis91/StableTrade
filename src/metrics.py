@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import json
 from src.logger import setup_logger
 from typing import Dict, List, Any, Optional
 
@@ -318,3 +319,83 @@ class MetricsModule:
                 print(trades[0])
             else:
                 print("No trades available")
+
+    def save_metrics_data(self, filepath: str, market_data: Dict[str, pd.DataFrame], trades: List[Dict], signals: List[Dict]) -> None:
+        """
+        Save all necessary data for metrics calculation to a file.
+
+        Args:
+            filepath (str): Path to save the metrics data.
+            market_data (Dict[str, pd.DataFrame]): Market data for each asset.
+            trades (List[Dict]): List of executed trades.
+            signals (List[Dict]): List of generated signals.
+        """
+        metrics_data = {
+            'portfolio_history': self.portfolio.history,
+            'base_currency': self.base_currency,
+            'risk_free_rate': self.risk_free_rate,
+            'trades': trades,
+            'signals': signals,
+            'market_data': {asset: data.to_json() for asset, data in market_data.items()}
+        }
+
+        with open(filepath, 'w') as f:
+            json.dump(metrics_data, f)
+
+        self.logger.info(f"Metrics data saved to {filepath}")
+    @classmethod
+    def load_metrics_data(cls, filepath: str) -> 'MetricsModule':
+        """
+        Load metrics data from a file and create a MetricsModule instance.
+
+        Args:
+            filepath (str): Path to the saved metrics data file.
+
+        Returns:
+            MetricsModule: An instance of MetricsModule with loaded data.
+        """
+        with open(filepath, 'r') as f:
+            metrics_data = json.load(f)
+
+        # Recreate the portfolio
+        portfolio = type('Portfolio', (), {'history': metrics_data['portfolio_history']})()
+
+        # Create the MetricsModule instance
+        metrics_module = cls(portfolio, 
+                             base_currency=metrics_data['base_currency'],
+                             risk_free_rate=metrics_data['risk_free_rate'])
+
+        # Load market data
+        market_data = {asset: pd.read_json(data) for asset, data in metrics_data['market_data'].items()}
+
+        # Store the loaded data
+        metrics_module.trades = metrics_data['trades']
+        metrics_module.signals = metrics_data['signals']
+        metrics_module.market_data = market_data
+
+        return metrics_module
+
+    def generate_metrics(self) -> Dict[str, Any]:
+        """
+        Generate all metrics using the loaded data.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing all calculated metrics.
+        """
+        sharpe_ratio = self.calculate_sharpe_ratio(self.market_data)
+        max_drawdown = self.calculate_max_drawdown(self.market_data)
+        cumulative_return = self.calculate_cumulative_return(self.market_data)
+        trade_summary = self.calculate_trade_summary(self.trades, self.market_data)
+
+        metrics = {
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'cumulative_return': cumulative_return,
+            **trade_summary,
+            'total_signals': len(self.signals),
+            'assets': list(self.market_data.keys()),
+            'initial_balance': self.portfolio.history[0]['holdings'][self.base_currency],
+            'final_balance': trade_summary['final_portfolio_value']
+        }
+
+        return metrics

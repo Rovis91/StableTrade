@@ -198,7 +198,7 @@ class BacktestEngine:
         
         for trade in open_trades:
             if trade['trailing_stop'] is not None:
-                trailing_stop_pct = trade['trailing_stop'] / 100
+                trailing_stop_pct = self.strategies[asset_name].trailing_stop_percent / 100
                 current_stop_loss = trade['stop_loss']
 
                 if trade['direction'] in [self.BUY, self.LONG]:
