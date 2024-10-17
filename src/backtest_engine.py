@@ -66,7 +66,8 @@ class BacktestEngine:
         self.market_data: Dict[str, pd.DataFrame] = {}
         self.unified_timestamps: List[int] = []
         self.metrics = metrics
-        self.signal_database = signal_database if signal_database else SignalDatabase(logger=self.logger)
+        self.signal_database = signal_database
+        self.process_signals_count = 0 
 
         self.logger.info("BacktestEngine initialized with %d assets and %d strategies", 
                          len(assets), len(strategies))
@@ -136,8 +137,11 @@ class BacktestEngine:
 
         # Close all open trades at the end of the backtest
         self._close_all_open_trades(self.unified_timestamps[-1])
+        print(f"Processed {self.process_signals_count} signals")
+        # save all signals to csv
+        self.signal_database.signals.to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/signals.csv")
 
-        self.log_final_summary()
+        #self.log_final_summary()
 
     def _process_timestamp(self, timestamp: int) -> None:
         """Process a single timestamp in the backtest."""
@@ -146,19 +150,23 @@ class BacktestEngine:
 
         for asset_name, data in self.market_data.items():
             if timestamp in data.index:
-                row_data = data.loc[timestamp]
-                current_price = row_data['close']
+                current_price = data.at[timestamp, 'close']
                 market_prices[asset_name] = current_price
 
-                # 1. Check stop losses and take profits
-                stop_loss_take_profit_signals = self._check_stop_loss_take_profit(asset_name, current_price, timestamp)
-                all_signals.extend(stop_loss_take_profit_signals)
+                # Check if there are open trades for this asset
+                open_trades = [trade for trade in self.trade_manager.get_trade(status=self.STATUS_OPEN) 
+                            if trade['asset_name'] == asset_name]
 
-                # 2. Update trailing stops
-                self._update_trailing_stops(asset_name, current_price)
+                if open_trades:
+                    # 1. Check stop losses and take profits
+                    stop_loss_take_profit_signals = self._check_stop_loss_take_profit(open_trades, current_price, timestamp)
+                    all_signals.extend(stop_loss_take_profit_signals)
+
+                    # 2. Update trailing stops
+                    self._update_trailing_stops(open_trades, asset_name, current_price)
 
                 # 3. Generate strategy signals
-                strategy_signals = self._generate_strategy_signals(asset_name, row_data, current_price, timestamp)
+                strategy_signals = self._generate_strategy_signals(asset_name, data.loc[timestamp], current_price, timestamp)
                 all_signals.extend(strategy_signals)
 
         # 4. Process all signals after checking all assets
@@ -169,13 +177,11 @@ class BacktestEngine:
         # 5. Store the portfolio history
         self.portfolio.store_history(timestamp)
 
-    def _check_stop_loss_take_profit(self, asset_name: str, current_price: float, timestamp: int) -> List[Dict[str, Any]]:
+    def _check_stop_loss_take_profit(self, open_trades: List[Dict[str, Any]], current_price: float, timestamp: int) -> List[Dict[str, Any]]:
         """Check for stop loss and take profit conditions for open trades of a specific asset."""
         close_signals = []
-        active_trades = [trade for trade in self.trade_manager.get_trade(status=self.STATUS_OPEN) 
-                         if trade['asset_name'] == asset_name]
         
-        for trade in active_trades:
+        for trade in open_trades:
             if trade['stop_loss'] is not None and current_price <= trade['stop_loss']:
                 self.logger.info("Stop loss triggered for trade %d at price %.8f", trade['id'], current_price)
                 close_signals.append(self._generate_close_signal(trade, current_price, timestamp, "stop_loss"))
@@ -185,12 +191,10 @@ class BacktestEngine:
 
         return close_signals
 
-    def _update_trailing_stops(self, asset_name: str, current_price: float) -> None:
+    def _update_trailing_stops(self, open_trades: List[Dict[str, Any]], asset_name: str, current_price: float) -> None:
         """Update trailing stops for open trades of a specific asset."""
-        active_trades = [trade for trade in self.trade_manager.get_trade(status=self.STATUS_OPEN) 
-                         if trade['asset_name'] == asset_name]
         
-        for trade in active_trades:
+        for trade in open_trades:
             if trade['trailing_stop'] is not None:
                 trailing_stop_pct = trade['trailing_stop'] / 100
                 current_stop_loss = trade['stop_loss']
@@ -230,7 +234,7 @@ class BacktestEngine:
         """Process a batch of trading signals."""
         self.logger.debug("Processing %d signals at timestamp %d", len(signals), timestamp)
         self.signal_database.add_signals(signals)
-        
+        self.process_signals_count += 1
         try:
             self.portfolio.process_signals(signals=signals, market_prices=market_prices, timestamp=timestamp)
             self.logger.debug("Signals processed successfully")

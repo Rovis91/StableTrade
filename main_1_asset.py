@@ -67,7 +67,7 @@ def main(log_levels: Optional[Dict[str, str]] = None):
 
     # Define the assets and their corresponding CSV data paths
     assets = {
-        'EUTEUR': 'D:\\StableTrade_dataset\\EUTEUR_1m\\EUTEUR_1m_final_merged.csv'
+        'EUTEUR': 'D:\\StableTrade_dataset\\EUTEUR_1m_2\\EUTEUR_1m_final_merged.csv'
     }
 
     # Verify if all required files exist before proceeding

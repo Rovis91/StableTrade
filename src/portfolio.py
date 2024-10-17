@@ -84,7 +84,8 @@ class Portfolio:
 
                 # Validate the signal
                 if not self.validate_signal(signal, market_prices):
-                    self.signal_database.update_signal_status(signal['signal_id'], 'rejected')
+                    signal_id = signal['signal_id']
+                    self.signal_database.update_signal_status(signal_id, 'rejected')
                     continue
 
                 # Perform action based on the signal's action type
@@ -219,7 +220,9 @@ class Portfolio:
                 self.logger.debug(f"Trade executed: {trade}")
 
                 # Update signal status to 'executed' in the signal database
-                self.signal_database.update_signal_status(signal['signal_id'], 'executed')
+                signal_id = signal['signal_id']
+                self.signal_database.update_signal_status(signal_id, 'executed')
+
 
                 # Update portfolio holdings based on the executed trade
                 market_type = self.portfolio_config[asset_name]['market_type']
@@ -268,7 +271,9 @@ class Portfolio:
                     if closed_trade:
                         self.update_holdings(closed_trade)
                         self.logger.info(f"Trade {trade_id} closed successfully")
-                        self.signal_database.update_signal_status(signal['signal_id'], 'executed')
+                        signal_id = signal['signal_id']
+                        self.signal_database.update_signal_status(signal_id, 'executed')
+
                 else:
                     self.logger.warning(f"Trade {trade_id} not found or already closed.")
             else:
