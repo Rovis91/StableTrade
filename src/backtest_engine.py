@@ -143,8 +143,6 @@ class BacktestEngine:
         all_signals = self.signal_database.get_signals()
         self.metrics.print_summary(self.market_data, all_trades, all_signals)
 
-        #self.log_final_summary()
-
     def _process_timestamp(self, timestamp: int) -> None:
         """Process a single timestamp in the backtest."""
         all_signals = []
@@ -261,39 +259,6 @@ class BacktestEngine:
         for asset, amount in self.portfolio.holdings.items():
             if asset != self.base_currency:
                 self.logger.info("Asset %s: %.8f", asset, amount)
-
-    def log_final_summary(self):
-        self.logger.info("Generating final backtest summary...")
-
-        try:
-            # Calculate metrics
-            sharpe_ratio = self.metrics.calculate_sharpe_ratio(self.market_data)
-            max_drawdown = self.metrics.calculate_max_drawdown(self.market_data)
-            cumulative_return = self.metrics.calculate_cumulative_return(self.market_data)
-            profit_factor = self.metrics.calculate_profit_factor(self.trade_manager.get_trade())
-            win_rate = self.metrics.calculate_win_rate(self.trade_manager.get_trade())
-            
-            # Get trade summary
-            trade_summary = self.metrics.calculate_trade_summary(self.trade_manager.get_trade(), self.market_data)
-
-            if "error" in trade_summary:
-                self.logger.warning(trade_summary["error"])
-                return
-
-            # Log results
-            self.logger.info(f"Sharpe Ratio: {sharpe_ratio:.4f}")
-            self.logger.info(f"Maximum Drawdown: {max_drawdown:.2%}")
-            self.logger.info(f"Cumulative Return: {cumulative_return:.2%}")
-            self.logger.info(f"Profit Factor: {profit_factor:.4f}")
-            self.logger.info(f"Win Rate: {win_rate:.2%}")
-            self.logger.info("Trade Summary:")
-            for key, value in trade_summary.items():
-                self.logger.info(f"  {key}: {value}")
-
-        except ValueError as e:
-            self.logger.warning(f"Unable to generate summary: {str(e)}")
-
-        self.logger.info("Backtest summary generation completed.")
 
     def _close_all_open_trades(self, final_timestamp: int) -> None:
         """

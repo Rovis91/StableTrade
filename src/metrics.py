@@ -1,17 +1,18 @@
 import pandas as pd
 import numpy as np
 import json
+from io import StringIO
+import logging
 from src.logger import setup_logger
 from typing import Dict, List, Any, Optional
-
 
 class MetricsModule:
     """
     A module to compute key metrics and performance statistics for a trading portfolio.
 
-    The MetricsModule provides various methods for calculating Sharpe Ratio, maximum drawdown,
-    cumulative returns, and trade summaries. It utilizes portfolio history and market data to 
-    derive these metrics.
+    This class provides methods for calculating various trading performance metrics
+    such as Sharpe Ratio, Maximum Drawdown, Cumulative Return, and Trade Summaries.
+    It also handles saving and loading of metrics data for offline analysis.
 
     Attributes:
         portfolio: The portfolio instance used to calculate historical values.
@@ -42,33 +43,48 @@ class MetricsModule:
 
     def create_portfolio_value_series(self, market_data: Dict[str, pd.DataFrame]) -> pd.Series:
         """
-        Create a time-indexed series of portfolio values.
+        Create a time-indexed series of portfolio values, handling duplicate timestamps.
         
-        This method iterates over the portfolio history and computes the total portfolio value at 
-        each timestamp, including asset values based on market data.
-
         Args:
             market_data (Dict[str, pd.DataFrame]): Dictionary mapping asset names to their market data DataFrames.
         
         Returns:
             pd.Series: Time-indexed series representing portfolio values at each timestamp.
-        
-        Example:
-            portfolio_value_series = metrics_module.create_portfolio_value_series(market_data)
         """
-        portfolio_values = []
-        for snapshot in self.portfolio.history:
-            timestamp = snapshot['timestamp']
-            holdings = snapshot['holdings']
-            total_value = holdings.get(self.base_currency, 0.0)
-            for asset, quantity in holdings.items():
-                if asset != self.base_currency and asset in market_data:
-                    closest_timestamp = self.get_closest_timestamp(market_data[asset], timestamp)
-                    asset_price = market_data[asset].loc[closest_timestamp, self.CLOSE] if closest_timestamp else 0.0
-                    total_value += quantity * asset_price
-            portfolio_values.append((pd.to_datetime(timestamp, unit='ms'), total_value))
-        return pd.Series(dict(portfolio_values))
+        # Create a unified timestamp index, removing duplicates
+        all_timestamps = sorted(set(ts for asset_data in market_data.values() for ts in asset_data.index))
+        unified_index = pd.DatetimeIndex(all_timestamps)
 
+        # Pre-process market data, handling duplicates
+        processed_market_data = {}
+        for asset, data in market_data.items():
+            if not data.empty:
+                # Group by index and take the last value for each duplicate timestamp
+                deduped_data = data.groupby(level=0).last()
+                processed_market_data[asset] = deduped_data['close'].reindex(unified_index, method='ffill')
+
+        # Create a DataFrame of holdings, handling duplicates
+        holdings_data = []
+        for snapshot in self.portfolio.history:
+            holdings_data.append({
+                'timestamp': pd.to_datetime(snapshot['timestamp'], unit='ms'),
+                **snapshot['holdings']
+            })
+        holdings_df = pd.DataFrame(holdings_data)
+        # Group by timestamp and take the last value for each duplicate
+        holdings_df = holdings_df.groupby('timestamp', as_index=False).last().set_index('timestamp')
+
+        # Reindex holdings to match the unified index
+        holdings_df = holdings_df.reindex(unified_index, method='ffill')
+
+        # Calculate portfolio value
+        portfolio_value = holdings_df[self.base_currency].fillna(0)
+        for asset, prices in processed_market_data.items():
+            if asset in holdings_df.columns:
+                portfolio_value += holdings_df[asset].fillna(0) * prices
+
+        return portfolio_value.dropna()
+    
     def calculate_daily_returns(self, market_data: Dict[str, pd.DataFrame]) -> pd.Series:
         """
         Calculate daily returns of the portfolio.
@@ -81,13 +97,16 @@ class MetricsModule:
         """
         portfolio_values = self.create_portfolio_value_series(market_data)
         daily_portfolio_values = portfolio_values.resample('D').last()
-        daily_returns = daily_portfolio_values.pct_change().dropna()
+        daily_returns = daily_portfolio_values.pct_change(fill_method=None).dropna()
         return daily_returns
 
     def calculate_sharpe_ratio(self, market_data: Dict[str, pd.DataFrame]) -> float:
         """
         Calculate the Sharpe Ratio for the portfolio.
         
+        The Sharpe ratio measures the performance of an investment compared to a risk-free asset,
+        after adjusting for its risk.
+
         Args:
             market_data (Dict[str, pd.DataFrame]): Market data for each asset.
         
@@ -103,11 +122,13 @@ class MetricsModule:
         """
         Calculate the Maximum Drawdown for the portfolio.
         
+        Maximum Drawdown measures the largest peak-to-trough decline in the portfolio value.
+
         Args:
             market_data (Dict[str, pd.DataFrame]): Market data for each asset.
         
         Returns:
-            float: The Maximum Drawdown.
+            float: The Maximum Drawdown as a percentage.
         """
         portfolio_values = self.create_portfolio_value_series(market_data)
         cumulative_max = portfolio_values.cummax()
@@ -118,11 +139,14 @@ class MetricsModule:
         """
         Calculate the Cumulative Return for the portfolio.
         
+        Cumulative Return represents the total percentage gain or loss of the portfolio
+        over the entire backtest period.
+
         Args:
             market_data (Dict[str, pd.DataFrame]): Market data for each asset.
         
         Returns:
-            float: The Cumulative Return.
+            float: The Cumulative Return as a percentage.
         """
         portfolio_values = self.create_portfolio_value_series(market_data)
         return (portfolio_values.iloc[-1] - portfolio_values.iloc[0]) / portfolio_values.iloc[0]
@@ -130,6 +154,9 @@ class MetricsModule:
     def calculate_profit_factor(self, trades: List[Dict]) -> float:
         """
         Calculate the profit factor for the executed trades.
+
+        Profit factor is the ratio of gross profit to gross loss. A value greater than 1 indicates
+        a profitable system.
 
         Args:
             trades (List[Dict]): List of executed trades.
@@ -140,17 +167,15 @@ class MetricsModule:
         if not trades:
             return np.nan
 
-        total_profit = sum(trade['profit'] for trade in trades if trade['profit'] > 0)
-        total_loss = sum(abs(trade['profit']) for trade in trades if trade['profit'] < 0)
-        
-        if total_loss == 0:
-            return np.inf if total_profit > 0 else np.nan
-
-        return total_profit / total_loss
+        total_profit = sum(trade.get('profit_loss', 0) for trade in trades if trade.get('profit_loss', 0) > 0)
+        total_loss = sum(abs(trade.get('profit_loss', 0)) for trade in trades if trade.get('profit_loss', 0) < 0)
+        return np.inf if total_loss == 0 else total_profit / total_loss
 
     def calculate_win_rate(self, trades: List[Dict]) -> float:
         """
         Calculate the win rate for the executed trades.
+
+        Win rate is the percentage of trades that resulted in a profit.
 
         Args:
             trades (List[Dict]): List of executed trades.
@@ -161,96 +186,31 @@ class MetricsModule:
         if not trades:
             return np.nan
 
-        winning_trades = sum(1 for trade in trades if trade['profit'] > 0)
+        winning_trades = sum(1 for trade in trades if trade.get('profit_loss', 0) > 0)
         return (winning_trades / len(trades)) * 100
-
-    def get_closest_timestamp(self, data: pd.DataFrame, target_timestamp: int) -> Optional[int]:
+    
+    def calculate_trade_summary(self, trades: List[Dict]) -> Dict:
         """
-        Retrieve the closest timestamp before the target timestamp from the DataFrame.
-
-        Args:
-            data (pd.DataFrame): The historical market data (indexed by timestamp).
-            target_timestamp (int): The target timestamp to search for.
-
-        Returns:
-            Optional[int]: The closest available timestamp less than or equal to the target, or None if not found.
-        """
-        available_timestamps = data.index
-        closest_timestamp = available_timestamps[available_timestamps <= target_timestamp].max()
-        return closest_timestamp if not pd.isna(closest_timestamp) else None
-
-    def calculate_portfolio_value_at_end(self, portfolio_history: List[Dict], market_data: Dict[str, pd.DataFrame]) -> float:
-        """
-        Calculate the final portfolio value by evaluating asset values at the end of the backtest.
-
-        Args:
-            portfolio_history (List[Dict]): List of portfolio snapshots over time.
-            market_data (Dict[str, pd.DataFrame]): Historical market data for assets.
-
-        Returns:
-            float: The final portfolio value.
-        """
-        last_snapshot = portfolio_history[-1]
-        last_market_prices = {asset: data.iloc[-1][self.CLOSE] for asset, data in market_data.items()}  # Get last close prices
-        final_portfolio_value = last_snapshot['holdings'].get(self.CASH, 0.0)  # Base currency balance
-
-        for asset, quantity in last_snapshot['holdings'].items():
-            if asset != self.CASH and asset in last_market_prices:
-                final_portfolio_value += quantity * last_market_prices[asset]
-
-        return final_portfolio_value
-
-    def calculate_trade_summary(self, trades: List[Dict], market_data: Dict[str, pd.DataFrame]) -> Dict:
-        """
-        Calculate a summary of trades executed during the backtest and portfolio performance.
+        Calculate a summary of trades executed during the backtest.
         
         Args:
             trades (List[Dict]): List of executed trades.
-            market_data (Dict[str, pd.DataFrame]): Market data for assets.
         
         Returns:
-            Dict: A dictionary containing summary statistics or an error message if no trades were executed.
+            Dict: A dictionary containing summary statistics.
         """
         if not trades:
             return {"error": "No trades were executed during the backtest."}
 
-        portfolio_values = self.create_portfolio_value_series(market_data)
-        
-        total_profit, total_fees, winning_trades, losing_trades = 0, 0, 0, 0
-        stop_loss_trades, take_profit_trades, total_holding_time = 0, 0, 0
-
-        last_timestamp = max(df.index[-1] for df in market_data.values())
-
-        for trade in trades:
-            entry_price = trade['entry_price']
-            exit_price = trade['exit_price'] or market_data[trade['asset_name']].iloc[-1]['close']
-            
-            profit = (exit_price - entry_price) * trade['asset_amount']
-            profit -= (trade['entry_fee'] + (trade['exit_fee'] or 0))
-            total_profit += profit
-            total_fees += trade['entry_fee'] + (trade['exit_fee'] or 0)
-
-            if profit > 0:
-                winning_trades += 1
-            else:
-                losing_trades += 1
-
-            if trade['exit_reason'] == self.STOP_LOSS_REASON:
-                stop_loss_trades += 1
-            elif trade['exit_reason'] == self.TAKE_PROFIT_REASON:
-                take_profit_trades += 1
-
-            exit_timestamp = trade['exit_timestamp'] or last_timestamp
-            holding_time = exit_timestamp - trade['entry_timestamp']
-            total_holding_time += holding_time
+        total_profit = sum(trade['profit_loss'] for trade in trades)
+        total_fees = sum(trade['entry_fee'] + trade['exit_fee'] for trade in trades)
+        winning_trades = sum(1 for trade in trades if trade['profit_loss'] > 0)
+        losing_trades = sum(1 for trade in trades if trade['profit_loss'] <= 0)
+        stop_loss_trades = sum(1 for trade in trades if trade['exit_reason'] == 'stop_loss')
+        take_profit_trades = sum(1 for trade in trades if trade['exit_reason'] == 'take_profit')
+        total_holding_time = sum(trade['exit_timestamp'] - trade['entry_timestamp'] for trade in trades)
 
         avg_holding_time = total_holding_time / len(trades) if trades else 0
-        final_portfolio_value = portfolio_values.iloc[-1]
-        initial_portfolio_value = portfolio_values.iloc[0]
-        total_percent_increase = ((final_portfolio_value - initial_portfolio_value) / initial_portfolio_value) * 100
-
-        total_days = (portfolio_values.index[-1] - portfolio_values.index[0]).days
-        avg_percent_per_month = (total_percent_increase / total_days) * 30
 
         return {
             "total_trades": len(trades),
@@ -260,66 +220,11 @@ class MetricsModule:
             "losing_trades": losing_trades,
             "stop_loss_trades": stop_loss_trades,
             "take_profit_trades": take_profit_trades,
-            "average_holding_time_minutes": avg_holding_time / (60 * 1000),
-            "final_portfolio_value": final_portfolio_value,
-            "total_percent_increase": total_percent_increase,
-            "avg_percent_per_month": avg_percent_per_month
-        }
+            "average_holding_time_minutes": avg_holding_time / (1000 * 60),
+            "win_rate": (winning_trades / len(trades)) * 100 if trades else 0,
+            "average_trade_profit": total_profit / len(trades) if trades else 0
+        }    
     
-    def print_summary(self, market_data: Dict[str, pd.DataFrame], trades: List[Dict], signals: List[Dict]) -> None:
-        """
-        Calculate and print a summary of the backtest results.
-
-        Args:
-            market_data (Dict[str, pd.DataFrame]): Market data for each asset.
-            trades (List[Dict]): List of executed trades.
-            signals (List[Dict]): List of generated signals.
-        """
-        try:
-            sharpe_ratio = self.calculate_sharpe_ratio(market_data)
-            max_drawdown = self.calculate_max_drawdown(market_data)
-            cumulative_return = self.calculate_cumulative_return(market_data)
-            
-            trade_summary = self.calculate_trade_summary(trades, market_data)
-
-            total_trades = len(trades)
-            total_signals = len(signals)
-            assets = list(market_data.keys())
-            initial_balance = self.portfolio.history[0]['holdings'][self.base_currency]
-            final_balance = trade_summary['final_portfolio_value']
-
-            print("\n=== Backtest Summary ===")
-            print(f"Assets: {', '.join(assets)}")
-            print(f"Initial Balance: {initial_balance:.2f} {self.base_currency}")
-            print(f"Final Balance: {final_balance:.2f} {self.base_currency}")
-            print(f"Total Return: {(final_balance - initial_balance):.2f} {self.base_currency} ({cumulative_return:.2%})")
-            print(f"Sharpe Ratio: {sharpe_ratio:.4f}")
-            print(f"Max Drawdown: {max_drawdown:.2%}")
-            print(f"Total Trades: {total_trades}")
-            print(f"Total Signals: {total_signals}")
-            
-            for key, value in trade_summary.items():
-                if isinstance(value, float):
-                    print(f"{key.replace('_', ' ').title()}: {value:.4f}")
-                else:
-                    print(f"{key.replace('_', ' ').title()}: {value}")
-
-            print("========================\n")
-
-            # Sanity checks
-            assert abs(final_balance - trade_summary['final_portfolio_value']) < 0.01, "Final balance mismatch"
-            assert abs(cumulative_return - trade_summary['total_percent_increase'] / 100) < 0.0001, "Cumulative return mismatch"
-
-        except Exception as e:
-            self.logger.error(f"Error calculating metrics summary: {str(e)}", exc_info=True)
-            print(f"Error occurred while calculating metrics summary: {str(e)}")
-            
-            if trades:
-                print("Sample trade:")
-                print(trades[0])
-            else:
-                print("No trades available")
-
     def save_metrics_data(self, filepath: str, market_data: Dict[str, pd.DataFrame], trades: List[Dict], signals: List[Dict]) -> None:
         """
         Save all necessary data for metrics calculation to a file.
@@ -336,13 +241,14 @@ class MetricsModule:
             'risk_free_rate': self.risk_free_rate,
             'trades': trades,
             'signals': signals,
-            'market_data': {asset: data.to_json() for asset, data in market_data.items()}
+            'market_data': {asset: data.reset_index().to_json(orient='split', date_format='iso') for asset, data in market_data.items()}
         }
 
         with open(filepath, 'w') as f:
             json.dump(metrics_data, f)
 
         self.logger.info(f"Metrics data saved to {filepath}")
+
     @classmethod
     def load_metrics_data(cls, filepath: str) -> 'MetricsModule':
         """
@@ -366,36 +272,140 @@ class MetricsModule:
                              risk_free_rate=metrics_data['risk_free_rate'])
 
         # Load market data
-        market_data = {asset: pd.read_json(data) for asset, data in metrics_data['market_data'].items()}
+        market_data = {}
+        for asset, data_json in metrics_data['market_data'].items():
+            try:
+                df = pd.read_json(StringIO(data_json))
+                if 'timestamp' not in df.columns:
+                    df['timestamp'] = pd.to_datetime(df.index, unit='ms')
+                df.set_index('timestamp', inplace=True)
+                market_data[asset] = df
+            except Exception as e:
+                logging.error(f"Error loading market data for {asset}: {str(e)}")
+                logging.debug(f"Data for {asset}: {data_json[:100]}...")  # Log the first 100 characters of the data
 
         # Store the loaded data
         metrics_module.trades = metrics_data['trades']
         metrics_module.signals = metrics_data['signals']
         metrics_module.market_data = market_data
 
-        return metrics_module
+        logging.info(f"Loaded market data for assets: {list(market_data.keys())}")
+        for asset, df in market_data.items():
+            logging.debug(f"Columns for {asset}: {df.columns}")
+            logging.debug(f"Index name for {asset}: {df.index.name}")
+            logging.debug(f"First few rows for {asset}:\n{df.head()}")
 
+        return metrics_module
+    
     def generate_metrics(self) -> Dict[str, Any]:
         """
-        Generate all metrics using the loaded data.
+        Generate a comprehensive set of metrics using the loaded data.
 
         Returns:
-            Dict[str, Any]: A dictionary containing all calculated metrics.
+            Dict[str, Any]: A dictionary containing all calculated metrics or error information.
         """
-        sharpe_ratio = self.calculate_sharpe_ratio(self.market_data)
-        max_drawdown = self.calculate_max_drawdown(self.market_data)
-        cumulative_return = self.calculate_cumulative_return(self.market_data)
-        trade_summary = self.calculate_trade_summary(self.trades, self.market_data)
+        if not self.market_data:
+            logging.error("No market data available to generate metrics.")
+            return {"error": "No market data available"}
 
-        metrics = {
-            'sharpe_ratio': sharpe_ratio,
-            'max_drawdown': max_drawdown,
-            'cumulative_return': cumulative_return,
-            **trade_summary,
-            'total_signals': len(self.signals),
-            'assets': list(self.market_data.keys()),
-            'initial_balance': self.portfolio.history[0]['holdings'][self.base_currency],
-            'final_balance': trade_summary['final_portfolio_value']
-        }
+        try:
+            portfolio_value_series = self.create_portfolio_value_series(self.market_data)
+            
+            if portfolio_value_series.empty:
+                logging.error("Generated portfolio value series is empty.")
+                return {"error": "Generated portfolio value series is empty"}
 
-        return metrics
+            start_date = portfolio_value_series.index[0]
+            end_date = portfolio_value_series.index[-1]
+            total_days = (end_date - start_date).days
+
+            initial_balance = portfolio_value_series.iloc[0]
+            final_balance = portfolio_value_series.iloc[-1]
+            total_profit = final_balance - initial_balance
+            total_percent_increase = (final_balance / initial_balance - 1) * 100
+
+            sharpe_ratio = self.calculate_sharpe_ratio(self.market_data)
+            max_drawdown = self.calculate_max_drawdown(self.market_data)
+            cumulative_return = self.calculate_cumulative_return(self.market_data)
+            trade_summary = self.calculate_trade_summary(self.trades)
+            
+            win_rate = self.calculate_win_rate(self.trades)
+            profit_factor = self.calculate_profit_factor(self.trades)
+
+            metrics = {
+                'start_date': start_date.strftime('%Y-%m-%d %H:%M:%S'),
+                'end_date': end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                'total_days': total_days,
+                'initial_balance': initial_balance,
+                'final_balance': final_balance,
+                'total_profit': total_profit,
+                'total_percent_increase': total_percent_increase,
+                'sharpe_ratio': sharpe_ratio,
+                'max_drawdown': max_drawdown,
+                'cumulative_return': cumulative_return,
+                'win_rate': win_rate,
+                'profit_factor': profit_factor,
+                'total_signals': len(self.signals),
+                'assets': list(self.market_data.keys()),
+                **trade_summary
+            }
+            
+            metrics['annualized_return'] = ((1 + cumulative_return) ** (365 / total_days) - 1) * 100 if total_days > 0 else 0
+            metrics['trades_per_day'] = metrics['total_trades'] / total_days if total_days > 0 else 0
+            
+            # Corrected average monthly return calculation
+            total_months = total_days / 30.44  # Average number of days in a month
+            metrics['average_monthly_return'] = ((1 + cumulative_return) ** (1 / total_months) - 1) * 100 if total_months > 0 else 0
+            
+            return metrics
+        except Exception as e:
+            logging.error(f"Error generating metrics: {str(e)}", exc_info=True)
+            return {"error": str(e)}
+            
+    def print_summary(self) -> None:
+        """
+        Print a summary of all generated metrics.
+
+        This method calls generate_metrics() and prints the metrics in a formatted,
+        easy-to-read manner. It provides an overview of the trading strategy's
+        performance, with an option for more detailed output.
+
+        Args:
+            detailed (bool): If True, prints additional detailed metrics. Defaults to False.
+        """
+        metrics = self.generate_metrics()
+        
+        if "error" in metrics:
+            print(f"Error generating metrics: {metrics['error']}")
+            return
+
+        print("\n========== Backtest Summary ==========")
+        print(f"Start Date: {metrics['start_date']}")
+        print(f"End Date: {metrics['end_date']}")
+        print(f"Total Days: {metrics['total_days']}")
+        print(f"Initial Balance: {metrics['initial_balance']:.2f} {self.base_currency}")
+        print(f"Final Balance: {metrics['final_balance']:.2f} {self.base_currency}")
+        print(f"Total Profit: {metrics['total_profit']:.2f} {self.base_currency}")
+        print(f"Total Percent Increase: {metrics['total_percent_increase']:.2f}%")
+        print(f"Annualized Return: {metrics['annualized_return']:.2f}%")
+        print(f"Average Monthly Return: {metrics['average_monthly_return']:.2f}%")
+        print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.4f}")
+        print(f"Max Drawdown: {metrics['max_drawdown']:.2f}%")
+        print(f"Cumulative Return: {metrics['cumulative_return']:.2f}%")
+        print(f"Win Rate: {metrics['win_rate']:.2f}%")
+        print(f"Total Trades: {metrics['total_trades']}")
+        print(f"Profit Factor: {metrics['profit_factor']:.4f}")
+    
+        print("\n----- Detailed Metrics -----")
+        print(f"Winning Trades: {metrics['winning_trades']}")
+        print(f"Losing Trades: {metrics['losing_trades']}")
+        print(f"Average Trade Profit: {metrics['average_trade_profit']:.2f} {self.base_currency}")
+        print(f"Average Holding Time: {metrics['average_holding_time_minutes']:.2f} minutes")
+        print(f"Trades Per Day: {metrics['trades_per_day']:.2f}")
+        print(f"Total Fees: {metrics['total_fees']:.2f} {self.base_currency}")
+        print(f"Stop Loss Trades: {metrics['stop_loss_trades']}")
+        print(f"Take Profit Trades: {metrics['take_profit_trades']}")
+        print(f"Total Signals Generated: {metrics['total_signals']}")
+        print(f"Assets Traded: {', '.join(metrics['assets'])}")
+
+        print("==========================================")

@@ -23,7 +23,7 @@ def profile_main(script_name):
     }
 
     # Run the profiler on the main function
-    cProfile.runctx('main_module.main(log_levels=custom_log_levels)', globals(), locals(), 'output.prof')
+    cProfile.runctx('main_module.main()', globals(), locals(), 'output.prof')
 
     # Print sorted stats
     with open('profiling_results.txt', 'w') as stream:

@@ -24,7 +24,7 @@ class DepegStrategy(Strategy):
         self.config = {
             'market_type': 'spot',
             'fees': {'entry': 0.001, 'exit': 0.001},
-            'max_trades': 5,  
+            'max_trades': 10,  
             'max_exposure': 0.70
         }
 
@@ -64,10 +64,9 @@ class DepegStrategy(Strategy):
         current_price = market_data['close']
 
         if pd.isna(sma_20):
-            self.logger.warning("SMA_20 is NaN, skipping signal generation.")
             return {}
 
-        deviation = (current_price - sma_20) / sma_20 * 100
+        deviation = (current_price - 1) * 100
         if deviation <= -self.depeg_threshold:
             self.logger.info(f"Buy condition met. Deviation: {deviation:.2f}% below SMA_20.")
             return {

@@ -13,7 +13,7 @@ from src.logger import setup_logger, set_log_levels
 INITIAL_CASH = 1000
 BASE_CURRENCY = 'EUR'
 DEFAULT_ASSET = 'EUTEUR'
-DEFAULT_DATA_PATH = 'D:\\StableTrade_dataset\\EUTEUR_1m_2\\EUTEUR_1m_final_merged.csv'
+DEFAULT_DATA_PATH = 'D:\\StableTrade_dataset\\EUTEUR_1m\\EUTEUR_1m_final_merged.csv'
 DEFAULT_METRICS_PATH = 'metrics_data.json'
 
 def verify_files_exist(assets: Dict[str, str], logger: logging.Logger) -> bool:
@@ -56,9 +56,9 @@ def run_backtest(custom: bool, log_levels: Optional[Dict[str, str]] = None):
         initial_cash = INITIAL_CASH
         depeg_threshold = 3
         trade_amount = 0.1
-        stop_loss = 0.02
-        take_profit = 0.02
-        trailing_stop = 0.01
+        stop_loss = 0.05
+        take_profit = 0.10
+        trailing_stop = 0.02
         slippage = 0.0001
 
     assets = {asset: data_path}
@@ -126,7 +126,7 @@ def run_backtest(custom: bool, log_levels: Optional[Dict[str, str]] = None):
         backtest_engine.run_backtest()
         main_logger.warning("Backtest completed successfully.")
 
-        metrics_file = get_user_input("Enter path to save metrics data", DEFAULT_METRICS_PATH)
+        metrics_file = DEFAULT_METRICS_PATH
         metrics_module.save_metrics_data(metrics_file, backtest_engine.market_data, trade_manager.get_trade(), signal_database.get_signals())
         main_logger.warning(f"Metrics data saved to {metrics_file}")
 
@@ -141,16 +141,11 @@ def analyze_results(custom: bool):
     else:
         metrics_file = DEFAULT_METRICS_PATH
 
-    metrics_module = MetricsModule.load_metrics_data(metrics_file)
-    metrics = metrics_module.generate_metrics()
-
-    print("\n=== Backtest Results ===")
-    for key, value in metrics.items():
-        if isinstance(value, float):
-            print(f"{key.replace('_', ' ').title()}: {value:.4f}")
-        else:
-            print(f"{key.replace('_', ' ').title()}: {value}")
-    print("========================\n")
+    try:
+        metrics_module = MetricsModule.load_metrics_data(metrics_file)
+        metrics_module.print_summary()
+    except Exception as e:
+        print(f"Error analyzing results: {str(e)}")
 
 def main():
     while True:
@@ -165,12 +160,12 @@ def main():
         
         custom_log_levels = {
             'main': 'WARNING',
-            'trade_manager': 'INFO',
+            'trade_manager': 'WARNING',
             'signal_database': 'WARNING',
             'depeg_strategy': 'WARNING',
-            'portfolio': 'INFO',
+            'portfolio': 'WARNING',
             'metrics': 'WARNING',
-            'backtest_engine': 'INFO'
+            'backtest_engine': 'WARNING'
         }
 
         if choice == '1':
