@@ -81,6 +81,30 @@ class TradeManager:
         Returns:
             Dict[str, Any]: A dictionary representing the opened trade.
         """
+       
+        if not isinstance(entry_timestamp, int):
+            raise ValueError("Timestamp must be an integer.")
+        if asset_amount <= 0:
+            raise ValueError("Asset amount must be greater than zero.")
+        if base_amount <= 0:
+            raise ValueError("Base amount must be greater than zero.")
+        if entry_price <= 0:
+            raise ValueError("Entry price must be greater than zero.")
+        if not isinstance(asset_name, str) or not asset_name:
+            raise ValueError("Asset name must be a non-empty string.")
+        if not isinstance(base_currency, str) or not base_currency:
+            raise ValueError("Base currency must be a non-empty string.")
+        if direction not in [self.BUY, self.SELL, self.LONG, self.SHORT]:
+            raise ValueError("Invalid direction. Must be 'buy', 'sell', 'long', or 'short'.")
+        if entry_fee < 0:
+            raise ValueError("Entry fee cannot be negative.")
+        if stop_loss is not None and stop_loss < 0:
+            raise ValueError("Stop loss cannot be negative if provided.")
+        if take_profit is not None and take_profit < 0:
+            raise ValueError("Take profit cannot be negative if provided.")
+        if trailing_stop is not None and trailing_stop < 0:
+            raise ValueError("Trailing stop cannot be negative if provided.")
+
         self.trade_counter += 1
         trade = {
             'id': self.trade_counter,
@@ -119,7 +143,7 @@ class TradeManager:
         exit_timestamp: int,
         exit_fee: float,
         exit_reason: str = "sell_signal",
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Close an existing trade and update the trade database.
 
@@ -131,7 +155,7 @@ class TradeManager:
             exit_reason (str, optional): The reason for exiting the trade. Defaults to "sell_signal".
 
         Returns:
-            Dict[str, Any]: The closed trade.
+            Optional[Dict[str, Any]]: The closed trade, or None if the trade does not exist or is already closed.
         """
         trade = self._find_trade_by_id(trade_id)
 
@@ -162,9 +186,7 @@ class TradeManager:
                 - exit_fee
             )
         else:
-            self.logger.error(
-                f"Trade {trade_id} has an invalid direction: {trade['direction']}"
-            )
+            self.logger.error(f"Trade {trade_id} has an invalid direction: {trade['direction']}")
             return None
 
         trade['profit_loss'] = pl_base
@@ -173,6 +195,7 @@ class TradeManager:
             f"Trade {trade_id} closed at {exit_price}, reason: {exit_reason}, "
             f"exit_fee: {exit_fee}, profit/loss: {pl_base} {trade['base_currency']}"
         )
+
         return trade
 
     def get_trade(
