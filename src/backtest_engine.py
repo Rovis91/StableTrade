@@ -243,7 +243,6 @@ class BacktestEngine:
             self.logger.error("Error processing signals: %s", str(e), exc_info=True)
 
     def _generate_close_signal(self, trade: Dict[str, Any], current_price: float, timestamp: int, reason: str) -> Dict[str, Any]:
-        """Generate a close signal for a trade."""
         return {
             'action': 'close',
             'trade_id': trade['id'],
@@ -251,7 +250,8 @@ class BacktestEngine:
             'amount': trade['asset_amount'],
             'price': current_price,
             'timestamp': timestamp,
-            'reason': reason
+            'reason': reason,
+            'signal_id': str(uuid.uuid4())  # Generate a unique ID for the signal
         }
 
     def _log_initial_state(self) -> None:

@@ -65,44 +65,39 @@ class Portfolio:
         self.logger.debug("Portfolio configuration validated successfully")
 
     def process_signals(self, signals: List[Dict], market_prices: Dict[str, float], timestamp: int) -> None:
-        """
-        Process a batch of signals, validate them, and execute trades if possible.
-
-        Args:
-            signals (List[Dict]): A list of signals to process.
-            market_prices (Dict[str, float]): Current prices for each asset.
-            timestamp (int): The current timestamp for when signals are processed.
-        """
         self.logger.info(f"Processing {len(signals)} signals at timestamp {timestamp}")
 
         for signal in signals:
             try:
                 asset_name = signal['asset_name']
                 action = signal['action']
-                trade_amount_percentage = float(signal['amount'])
-                asset_price = market_prices[asset_name]
-
-                # Validate the signal
-                if not self.validate_signal(signal, market_prices):
-                    signal_id = signal['signal_id']
-                    self.signal_database.update_signal_status(signal_id, 'rejected')
-                    continue
-
-                # Perform action based on the signal's action type
-                available_cash = self.holdings.get(self.base_currency, 0.0)
-                asset_holdings = self.holdings.get(asset_name, 0.0)
-
-                if action == 'buy':
-                    cash_to_use = available_cash * trade_amount_percentage
-                    asset_quantity = cash_to_use / asset_price
-                    base_amount = cash_to_use
-                    self._execute_trade(signal, asset_quantity, base_amount, asset_price, timestamp)
-                elif action == 'sell':
-                    asset_quantity = asset_holdings * trade_amount_percentage
-                    base_amount = asset_quantity * asset_price
-                    self._execute_trade(signal, asset_quantity, base_amount, asset_price, timestamp)
-                elif action == 'close':
+                
+                if action == 'close':
+                    self.logger.info(f"Received close signal for trade {signal.get('trade_id')} of {asset_name}")
                     self._close_trade(signal, timestamp)
+                elif action in ['buy', 'sell']:
+                    trade_amount_percentage = float(signal['amount'])
+                    asset_price = market_prices[asset_name]
+
+                    # Validate the signal
+                    if not self.validate_signal(signal, market_prices):
+                        signal_id = signal['signal_id']
+                        self.signal_database.update_signal_status(signal_id, 'rejected')
+                        continue
+
+                    # Perform action based on the signal's action type
+                    available_cash = self.holdings.get(self.base_currency, 0.0)
+                    asset_holdings = self.holdings.get(asset_name, 0.0)
+
+                    if action == 'buy':
+                        cash_to_use = available_cash * trade_amount_percentage
+                        asset_quantity = cash_to_use / asset_price
+                        base_amount = cash_to_use
+                        self._execute_trade(signal, asset_quantity, base_amount, asset_price, timestamp)
+                    elif action == 'sell':
+                        asset_quantity = asset_holdings * trade_amount_percentage
+                        base_amount = asset_quantity * asset_price
+                        self._execute_trade(signal, asset_quantity, base_amount, asset_price, timestamp)
                 else:
                     self.logger.warning(f"Unknown action {action} in signal: {signal}")
 
@@ -244,40 +239,37 @@ class Portfolio:
                 self.logger.error(f"Error executing trade: {e}", exc_info=True)
 
     def _close_trade(self, signal: Dict, timestamp: int) -> None:
-        """
-        Close an existing trade based on the provided signal.
-
-        Args:
-            signal (Dict): The close signal containing trade details.
-            timestamp (int): The timestamp of the trade closure.
-        """
         try:
             asset_name = signal['asset_name']
-            trade_id = signal.get('trade_id')
+            trade_id = signal['trade_id']
             exit_price = float(signal['price'])
-            exit_reason = signal.get('reason', 'close_signal')
+            exit_reason = signal['reason']
 
-            if trade_id:
-                trade = self.trade_manager.get_trade(trade_id=trade_id)
-                if trade and trade['status'] == 'open':
-                    exit_fee = self.get_fee(asset_name, 'exit')
-                    closed_trade = self.trade_manager.close_trade(
-                        trade_id=trade_id,
-                        exit_price=exit_price,
-                        exit_timestamp=timestamp,
-                        exit_fee=exit_fee,
-                        exit_reason=exit_reason
-                    )
-                    if closed_trade:
-                        self.update_holdings(closed_trade)
-                        self.logger.info(f"Trade {trade_id} closed successfully")
-                        signal_id = signal['signal_id']
-                        self.signal_database.update_signal_status(signal_id, 'executed')
+            self.logger.info(f"Attempting to close trade {trade_id} for {asset_name}")
 
-                else:
-                    self.logger.warning(f"Trade {trade_id} not found or already closed.")
+            trades = self.trade_manager.get_trade(trade_id=trade_id)
+            if isinstance(trades, list):
+                trade = trades[0] if trades else None
             else:
-                self.logger.warning(f"No trade_id provided in close signal for {asset_name}")
+                trade = trades
+
+            if trade and trade.get('status') == 'open':
+                exit_fee = self.get_fee(asset_name, 'exit')
+                closed_trade = self.trade_manager.close_trade(
+                    trade_id=trade_id,
+                    exit_price=exit_price,
+                    exit_timestamp=timestamp,
+                    exit_fee=exit_fee,
+                    exit_reason=exit_reason
+                )
+                if closed_trade:
+                    self.update_holdings(closed_trade)
+                    self.logger.info(f"Trade {trade_id} closed successfully")
+                    self.signal_database.update_signal_status(signal['signal_id'], 'executed')
+                else:
+                    self.logger.error(f"Failed to close trade {trade_id}")
+            else:
+                self.logger.warning(f"Trade {trade_id} not found or already closed. Trade status: {trade.get('status') if trade else 'Not found'}")
 
         except Exception as e:
             self.logger.error(f"Error closing trade: {e}", exc_info=True)

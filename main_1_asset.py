@@ -165,12 +165,12 @@ def main():
         
         custom_log_levels = {
             'main': 'WARNING',
-            'trade_manager': 'WARNING',
+            'trade_manager': 'INFO',
             'signal_database': 'WARNING',
             'depeg_strategy': 'WARNING',
-            'portfolio': 'WARNING',
+            'portfolio': 'INFO',
             'metrics': 'WARNING',
-            'backtest_engine': 'WARNING'
+            'backtest_engine': 'INFO'
         }
 
         if choice == '1':

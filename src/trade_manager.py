@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from src.logger import setup_logger
 import csv
 
@@ -113,21 +113,23 @@ class TradeManager:
         self.logger.error(f"Attempt to close trade {trade_id} failed: trade not found or already closed.")
         return None
 
-    def get_trade(self, trade_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_trade(self, trade_id: Optional[int] = None, status: Optional[str] = None) -> Union[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """
         Retrieve trades by their ID or status (open or closed).
 
         Args:
-            (... same as before ...)
+            trade_id (Optional[int]): The ID of a specific trade to retrieve.
+            status (Optional[str]): The status of trades to retrieve ('open' or 'closed').
 
         Returns:
-            List[Dict[str, Any]]: A list of trades that match the search criteria.
+            Union[List[Dict[str, Any]], Optional[Dict[str, Any]]]: A list of trades that match the search criteria,
+            or a single trade if trade_id is provided.
         """
         if trade_id is not None:
             trade = self.trades_by_id.get(trade_id)
             if not trade:
                 self.logger.warning(f"Trade with ID {trade_id} not found.")
-            return [trade] if trade else []
+            return trade  # Return the single trade or None if not found
 
         if status is not None:
             return [trade for trade in self.trades if trade['status'] == status]
