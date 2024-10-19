@@ -10,7 +10,7 @@ class SignalDatabase:
     COLUMN_STATUS = 'status'
     COLUMN_REASON = 'reason'
 
-    def __init__(self):
+    def __init__(self, trade_manager):
         """
         Initialize the SignalDatabase with default columns, an empty signal list, and a signal counter.
         Sets up logging for the class.
@@ -29,6 +29,7 @@ class SignalDatabase:
             self.COLUMN_STATUS: str,
             self.COLUMN_REASON: str
         }
+        self.trade_manager = trade_manager
         self.signals: List[Dict[str, Any]] = []
         self.signal_counter: int = 0
         self.logger = logging.getLogger(__name__)

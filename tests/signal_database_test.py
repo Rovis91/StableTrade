@@ -6,10 +6,12 @@ from typing import Dict, List, Any
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.signal_database import SignalDatabase
+from src.trade_manager import TradeManager
 
 @pytest.fixture
 def signal_database():
-    return SignalDatabase()
+    trade_manager = TradeManager(base_currency="USD")
+    return SignalDatabase(trade_manager)
 
 def test_add_single_valid_signal(signal_database):
     signal: Dict[str, Any] = {

@@ -68,7 +68,7 @@ def run_backtest(custom: bool, log_levels: Optional[Dict[str, str]] = None):
         return
 
     trade_manager = TradeManager(base_currency=BASE_CURRENCY)
-    signal_database = SignalDatabase()
+    signal_database = SignalDatabase(trade_manager)
     main_logger.warning("Trade manager and signal database initialized.")
 
     strategies = {
