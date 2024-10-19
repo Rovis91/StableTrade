@@ -4,7 +4,6 @@ from typing import Dict, List, Any, Optional
 from src.data_preprocessor import DataPreprocessor
 from src.metrics import MetricsModule
 from src.signal_database import SignalDatabase
-import uuid
 from tqdm import tqdm
 
 
@@ -138,10 +137,10 @@ class BacktestEngine:
         self._close_all_open_trades(self.unified_timestamps[-1])
         # save all signals to csv
         self.signal_database.to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/signals.csv")
-        self.trade_manager.save_trades_to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/trades.csv")
+        self.trade_manager.export_trades_to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/trades.csv")
         all_trades = self.trade_manager.get_trade()
         all_signals = self.signal_database.get_signals()
-        self.metrics.print_summary(self.market_data, all_trades, all_signals)
+        self.metrics.print_summary()
 
     def _process_timestamp(self, timestamp: int) -> None:
         """Process a single timestamp in the backtest."""
@@ -188,7 +187,6 @@ class BacktestEngine:
             elif trade['take_profit'] is not None and current_price >= trade['take_profit']:
                 self.logger.info("Take profit triggered for trade %d at price %.8f", trade['id'], current_price)
                 close_signals.append(self._generate_close_signal(trade, current_price, timestamp, "take_profit"))
-
         return close_signals
 
     def _update_trailing_stops(self, open_trades: List[Dict[str, Any]], asset_name: str, current_price: float) -> None:
@@ -230,7 +228,7 @@ class BacktestEngine:
 
         return signals
 
-    def _process_signals(self, signals: List[Dict[str, Any]], market_prices: Dict[str, float], timestamp: int) -> None:
+    def _process_signals(self, signals: List[Dict[Any, Any]], market_prices: Dict[str, float], timestamp: int) -> None:
         """Process a batch of trading signals."""
         self.logger.debug("Processing %d signals at timestamp %d", len(signals), timestamp)
         self.signal_database.add_signals(signals)
@@ -248,8 +246,7 @@ class BacktestEngine:
             'amount': trade['asset_amount'],
             'price': current_price,
             'timestamp': timestamp,
-            'reason': reason,
-            'signal_id': str(uuid.uuid4())  # Generate a unique ID for the signal
+            'reason': 'reason',
         }
 
     def _log_initial_state(self) -> None:

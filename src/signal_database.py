@@ -40,38 +40,32 @@ class SignalDatabase:
 
         Args:
             signals (List[Dict[str, Any]]): A list of signal dictionaries to add.
-
-        The method validates each signal, assigns a unique signal ID, and ensures all required fields are present.
-        Fields missing in the input are assigned default values based on their type.
         """
         if not signals:
             return
 
         for signal in signals:
-            self._validate_signal(signal)
+            self.validate_signal(signal)
+
             self.signal_counter += 1
             signal[self.COLUMN_SIGNAL_ID] = self.signal_counter
             signal[self.COLUMN_STATUS] = self.STATUS_PENDING
-            signal[self.COLUMN_TRADE_ID] = None
+
+            if self.COLUMN_TRADE_ID not in signal or signal[self.COLUMN_TRADE_ID] is None:
+                signal[self.COLUMN_TRADE_ID] = None
 
             for column, dtype in self.columns.items():
-                if column not in signal:
-                    if dtype == Optional[int]:
-                        signal[column] = None
-                    elif dtype in (int, float):
-                        signal[column] = 0
-                    else:
-                        signal[column] = ''
-                elif dtype in (int, float):
-                    signal[column] = dtype(float(signal[column]))
-                elif dtype == Optional[int]:
-                    signal[column] = int(float(signal[column])) if signal[column] is not None else None
-                elif dtype == str:
-                    signal[column] = str(signal[column])
+                if column in signal and signal[column] is not None:
+                    if dtype in (int, float):
+                        signal[column] = dtype(float(signal[column]))
+                    elif dtype == Optional[int]:
+                        signal[column] = int(float(signal[column])) if signal[column] is not None else None
+                    elif dtype == str:
+                        signal[column] = str(signal[column])
 
-            self.signals.append(signal)  
+            self.signals.append(signal)
 
-    def _validate_signal(self, signal: Dict[str, Any]) -> bool:
+    def validate_signal(self, signal: Dict[str, Any]) -> bool:
         """
         Validate a signal to ensure it contains required fields and valid values.
 
@@ -110,21 +104,22 @@ class SignalDatabase:
         stop_loss = signal.get('stop_loss')
         take_profit = signal.get('take_profit')
         
-        if stop_loss is not None:
-            try:
-                stop_loss = float(stop_loss)
-                if stop_loss <= 0:
-                    raise ValueError(f"Invalid stop_loss: {stop_loss}. Must be a valid number greater than 0.")
-            except ValueError:
-                raise ValueError(f"Invalid stop_loss: {signal['stop_loss']}. Must be a valid number greater than 0.")
+        if action is not "close":
+            if stop_loss is not None:
+                try:
+                    stop_loss = float(stop_loss)
+                    if stop_loss <= 0:
+                        raise ValueError(f"Invalid stop_loss: {stop_loss}. Must be a valid number greater than 0.")
+                except ValueError:
+                    raise ValueError(f"Invalid stop_loss: {signal['stop_loss']}. Must be a valid number greater than 0.")
 
-        if take_profit is not None:
-            try:
-                take_profit = float(take_profit)
-                if take_profit <= 0:
-                    raise ValueError(f"Invalid take_profit: {take_profit}. Must be a valid number greater than 0.")
-            except ValueError:
-                raise ValueError(f"Invalid take_profit: {signal['take_profit']}. Must be a valid number greater than 0.")
+            if take_profit is not None:
+                try:
+                    take_profit = float(take_profit)
+                    if take_profit <= 0:
+                        raise ValueError(f"Invalid take_profit: {take_profit}. Must be a valid number greater than 0.")
+                except ValueError:
+                    raise ValueError(f"Invalid take_profit: {signal['take_profit']}. Must be a valid number greater than 0.")
 
         if action == 'close':
             if 'trade_id' not in signal:
