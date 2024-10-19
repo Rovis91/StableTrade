@@ -11,6 +11,10 @@ class SignalDatabase:
     COLUMN_REASON = 'reason'
 
     def __init__(self):
+        """
+        Initialize the SignalDatabase with default columns, an empty signal list, and a signal counter.
+        Sets up logging for the class.
+        """
         self.columns = {
             'timestamp': int,
             'asset_name': str,
@@ -30,6 +34,15 @@ class SignalDatabase:
         self.logger = logging.getLogger(__name__)
 
     def add_signals(self, signals: List[Dict[str, Any]]) -> None:
+        """
+        Add a list of signals to the SignalDatabase.
+
+        Args:
+            signals (List[Dict[str, Any]]): A list of signal dictionaries to add.
+
+        The method validates each signal, assigns a unique signal ID, and ensures all required fields are present.
+        Fields missing in the input are assigned default values based on their type.
+        """
         if not signals:
             return
 
@@ -56,23 +69,87 @@ class SignalDatabase:
                     signal[column] = str(signal[column])
 
             self.signals.append(signal)  
-    
-    def _validate_signal(self, signal: Dict[str, Any]) -> None:
+
+    def _validate_signal(self, signal: Dict[str, Any]) -> bool:
+        """
+        Validate a signal to ensure it contains required fields and valid values.
+
+        Args:
+            signal (Dict[str, Any]): The signal dictionary to validate.
+
+        Returns:
+            bool: True if the signal is valid, False otherwise.
+
+        Raises:
+            ValueError: If any required field is missing or contains invalid data.
+        """
         required_fields = ['timestamp', 'asset_name', 'action', 'amount', 'price']
         for field in required_fields:
             if field not in signal:
                 raise ValueError(f"Missing required field: {field}")
 
-        if signal['action'] not in ['buy', 'sell', 'close']:
-            raise ValueError(f"Invalid action: {signal['action']}")
+        action = signal['action']
+        if action not in ['buy', 'sell', 'close']:
+            raise ValueError(f"Invalid action: {action}")
 
-        if float(signal['amount']) <= 0:
-            raise ValueError(f"Invalid amount: {signal['amount']}")
+        try:
+            amount = float(signal['amount'])
+            if amount <= 0 or (action in ['buy', 'sell'] and amount > 1):
+                raise ValueError(f"Invalid amount in signal: {amount}. Must be between 0 and 1 for buy/sell actions.")
+        except ValueError:
+            raise ValueError(f"Invalid amount in signal: {signal['amount']}.")
 
-        if float(signal['price']) <= 0:
-            raise ValueError(f"Invalid price: {signal['price']}")
-    
+        try:
+            price = float(signal['price'])
+            if price <= 0:
+                raise ValueError(f"Invalid price: {price}.")
+        except ValueError:
+            raise ValueError(f"Invalid price in signal: {signal['price']}.")
+
+        stop_loss = signal.get('stop_loss')
+        take_profit = signal.get('take_profit')
+        
+        if stop_loss is not None:
+            try:
+                stop_loss = float(stop_loss)
+                if stop_loss <= 0:
+                    raise ValueError(f"Invalid stop_loss: {stop_loss}. Must be a valid number greater than 0.")
+            except ValueError:
+                raise ValueError(f"Invalid stop_loss: {signal['stop_loss']}. Must be a valid number greater than 0.")
+
+        if take_profit is not None:
+            try:
+                take_profit = float(take_profit)
+                if take_profit <= 0:
+                    raise ValueError(f"Invalid take_profit: {take_profit}. Must be a valid number greater than 0.")
+            except ValueError:
+                raise ValueError(f"Invalid take_profit: {signal['take_profit']}. Must be a valid number greater than 0.")
+
+        if action == 'close':
+            if 'trade_id' not in signal:
+                raise ValueError("Close signal is missing 'trade_id'")
+            trades = self.trade_manager.get_trade(trade_id=signal['trade_id'])
+            if not trades:
+                raise ValueError(f"No trade found with id {signal['trade_id']}")
+            if isinstance(trades, list):
+                trade = trades[0] if trades else None
+            else:
+                trade = trades
+            if not trade or trade.get('status') != 'open':
+                raise ValueError(f"Trade {signal['trade_id']} is not open")
+
+        return True
+
     def get_signals(self, **filters: Any) -> List[Dict[str, Any]]:
+        """
+        Retrieve signals from the database, optionally filtering based on field values.
+
+        Args:
+            **filters: Arbitrary keyword arguments to filter the signals (e.g., status='pending').
+
+        Returns:
+            List[Dict[str, Any]]: A list of signals that match the provided filters.
+        """
         if not filters:
             return self.signals.copy()
 
@@ -97,47 +174,41 @@ class SignalDatabase:
             ValueError: If the field is not allowed or the signal ID is not found.
             TypeError: If the new value type does not match the expected field type.
         """
-        # Define allowed fields and their expected data types
         allowed_fields = {
             'trade_id': int,
             'status': str,
             'reason': str,
         }
 
-        # Check if the provided field name is in the list of allowed fields
         if field_name not in allowed_fields:
             self.logger.error(f"Field '{field_name}' is not allowed to be updated.")
             raise ValueError(f"Field '{field_name}' cannot be updated.")
 
-        # Check if the new value matches the expected type for the field
         expected_type = allowed_fields[field_name]
         if not isinstance(new_value, expected_type):
             self.logger.error(f"Field '{field_name}' expects value of type {expected_type.__name__}.")
             raise TypeError(f"Expected {expected_type.__name__} for field '{field_name}', got {type(new_value).__name__}.")
 
-        # Iterate through signals to find the one matching the provided signal_id
         for signal in self.signals:
             if signal[self.COLUMN_SIGNAL_ID] == signal_id:
-                # Update the specified field with the new value
                 signal[field_name] = new_value
                 self.logger.info(f"Updated signal {signal_id} field '{field_name}' to '{new_value}'")
-                return
-
-        # If the signal with the provided signal_id is not found, log an error and raise an exception
-        self.logger.error(f"Signal {signal_id} not found in the database.")
-        raise ValueError(f"Signal {signal_id} not found.")
-
-    def update_trade_id(self, signal_id: int, trade_id: int) -> None:
-        for signal in self.signals:
-            if signal[self.COLUMN_SIGNAL_ID] == signal_id:
-                signal[self.COLUMN_TRADE_ID] = trade_id
-                self.logger.info(f"Updated signal {signal_id} with trade ID: {trade_id}")
                 return
 
         self.logger.error(f"Signal {signal_id} not found in the database.")
         raise ValueError(f"Signal {signal_id} not found.")
 
     def to_csv(self, filepath: str) -> None:
+        """
+        Export the signals to a CSV file.
+
+        Args:
+            filepath (str): The path to the CSV file to write.
+
+        Raises:
+            IOError: If there is an issue writing to the file.
+            Exception: For any unexpected errors during export.
+        """
         if not self.signals:
             self.logger.warning("No signals to export.")
             return
