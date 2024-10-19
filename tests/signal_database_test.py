@@ -115,7 +115,8 @@ def test_add_signals_type_conversion(signal_database):
 def test_update_signal_status(signal_database):
     signal: Dict[str, Any] = {'timestamp': 1620000000000, 'asset_name': 'BTC/USD', 'action': 'buy', 'amount': 1.0, 'price': 50000.0}
     signal_database.add_signals([signal])
-    signal_database.update_signal_status(1, 'executed', 'Test reason')
+    signal_database.update_signal_field(signal_id=1, field_name='status', new_value='executed')
+    signal_database.update_signal_field(signal_id=1, field_name='reason', new_value='Test reason')
     assert signal_database.signals[0]['status'] == 'executed'
     assert signal_database.signals[0]['reason'] == 'Test reason'
 

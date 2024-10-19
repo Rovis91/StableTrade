@@ -84,15 +84,46 @@ class SignalDatabase:
         self.logger.info(f"Retrieved {len(filtered_signals)} signals matching filters: {filters}")
         return filtered_signals
 
-    def update_signal_status(self, signal_id: int, new_status: str, reason: Optional[str] = None) -> None:
+    def update_signal_field(self, signal_id: int, field_name: str, new_value: Any) -> None:
+        """
+        Update a specific field for a signal identified by its signal_id.
+
+        Args:
+            signal_id (int): The ID of the signal to update.
+            field_name (str): The name of the field to update ('trade_id', 'status', or 'reason').
+            new_value (Any): The new value to assign to the field (should match expected type).
+
+        Raises:
+            ValueError: If the field is not allowed or the signal ID is not found.
+            TypeError: If the new value type does not match the expected field type.
+        """
+        # Define allowed fields and their expected data types
+        allowed_fields = {
+            'trade_id': int,
+            'status': str,
+            'reason': str,
+        }
+
+        # Check if the provided field name is in the list of allowed fields
+        if field_name not in allowed_fields:
+            self.logger.error(f"Field '{field_name}' is not allowed to be updated.")
+            raise ValueError(f"Field '{field_name}' cannot be updated.")
+
+        # Check if the new value matches the expected type for the field
+        expected_type = allowed_fields[field_name]
+        if not isinstance(new_value, expected_type):
+            self.logger.error(f"Field '{field_name}' expects value of type {expected_type.__name__}.")
+            raise TypeError(f"Expected {expected_type.__name__} for field '{field_name}', got {type(new_value).__name__}.")
+
+        # Iterate through signals to find the one matching the provided signal_id
         for signal in self.signals:
             if signal[self.COLUMN_SIGNAL_ID] == signal_id:
-                signal[self.COLUMN_STATUS] = new_status
-                if reason is not None:
-                    signal[self.COLUMN_REASON] = reason
-                self.logger.info(f"Updated signal {signal_id} status to '{new_status}' with reason: {reason}")
+                # Update the specified field with the new value
+                signal[field_name] = new_value
+                self.logger.info(f"Updated signal {signal_id} field '{field_name}' to '{new_value}'")
                 return
 
+        # If the signal with the provided signal_id is not found, log an error and raise an exception
         self.logger.error(f"Signal {signal_id} not found in the database.")
         raise ValueError(f"Signal {signal_id} not found.")
 
