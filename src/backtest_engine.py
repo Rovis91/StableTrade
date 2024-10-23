@@ -194,22 +194,26 @@ class BacktestEngine:
         """Update trailing stops for open trades of a specific asset."""
         
         for trade in open_trades:
-            if trade['trailing_stop'] is not None:
-                trailing_stop_pct = self.strategies[asset_name].trailing_stop_percent / 100
-                current_stop_loss = trade['stop_loss']
+            trailing_stop_pct = self.strategies[asset_name].trailing_stop_percent / 100
+            current_stop_loss = trade['stop_loss']
 
-                if trade['direction'] in [self.BUY, self.LONG]:
-                    new_stop_loss = current_price * (1 - trailing_stop_pct)
-                    if new_stop_loss > current_stop_loss:
-                        self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
-                        self.logger.info("Updated trailing stop for trade %d (%s). New stop loss: %.8f", 
-                                         trade['id'], asset_name, new_stop_loss)
-                elif trade['direction'] in [self.SELL, self.SHORT]:
-                    new_stop_loss = current_price * (1 + trailing_stop_pct)
-                    if new_stop_loss < current_stop_loss:
-                        self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
-                        self.logger.info("Updated trailing stop for trade %d (%s). New stop loss: %.8f", 
-                                         trade['id'], asset_name, new_stop_loss)
+            # Check if trailing stop should be updated for a long position
+            if trade['direction'] in [self.BUY, self.LONG]:
+                new_stop_loss = current_price * (1 - trailing_stop_pct)
+                # Only update if the new stop loss is greater than the current stop loss
+                if current_stop_loss is None or new_stop_loss > current_stop_loss:
+                    self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
+                    self.logger.info("Updated trailing stop for trade %d (%s). New stop loss: %.8f", 
+                                    trade['id'], asset_name, new_stop_loss)
+
+            # Check if trailing stop should be updated for a short position
+            elif trade['direction'] in [self.SELL, self.SHORT]:
+                new_stop_loss = current_price * (1 + trailing_stop_pct)
+                # Only update if the new stop loss is lower than the current stop loss
+                if current_stop_loss is None or new_stop_loss < current_stop_loss:
+                    self.trade_manager.modify_trade_parameters(trade_id=trade['id'], stop_loss=new_stop_loss)
+                    self.logger.info("Updated trailing stop for trade %d (%s). New stop loss: %.8f", 
+                                    trade['id'], asset_name, new_stop_loss)
 
     def _generate_strategy_signals(self, asset_name: str, row_data: pd.Series, current_price: float, timestamp: int) -> List[Dict[str, Any]]:
         """Generate strategy signals for a specific asset."""
@@ -231,8 +235,14 @@ class BacktestEngine:
 
     def _process_signals(self, signals: List[Dict[Any, Any]], market_prices: Dict[str, float], timestamp: int) -> None:
         """Process a batch of trading signals."""
+        if not signals:
+            # If there are no signals, we shouldn't call add_signals or process_signals.
+            self.logger.debug("No signals to process at timestamp %d", timestamp)
+            return
+        
         self.logger.debug("Processing %d signals at timestamp %d", len(signals), timestamp)
         self.signal_database.add_signals(signals)
+        
         try:
             self.portfolio.process_signals(signals=signals, market_prices=market_prices, timestamp=timestamp)
             self.logger.debug("Signals processed successfully")
@@ -247,7 +257,7 @@ class BacktestEngine:
             'amount': trade['asset_amount'],
             'price': current_price,
             'timestamp': timestamp,
-            'reason': 'reason',
+            'reason': reason,
         }
 
     def _log_initial_state(self) -> None:
