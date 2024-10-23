@@ -102,7 +102,7 @@ def run_backtest(custom: bool, log_levels: Optional[Dict[str, str]] = None):
     )
     main_logger.warning(f"Portfolio initialized with {initial_cash} {BASE_CURRENCY}.")
 
-    metrics_module = MetricsModule(portfolio=portfolio, base_currency=BASE_CURRENCY)
+    metrics_module = MetricsModule(market_data_path=DEFAULT_DATA_PATH, base_currency=BASE_CURRENCY)
     main_logger.warning("Metrics module initialized.")
 
     backtest_engine = BacktestEngine(
@@ -126,10 +126,6 @@ def run_backtest(custom: bool, log_levels: Optional[Dict[str, str]] = None):
         backtest_engine.run_backtest()
         main_logger.warning("Backtest completed successfully.")
 
-        metrics_file = DEFAULT_METRICS_PATH
-        metrics_module.save_metrics_data(metrics_file, backtest_engine.market_data, trade_manager.get_trade(), signal_database.get_signals())
-        main_logger.warning(f"Metrics data saved to {metrics_file}")
-
     except Exception as e:
         main_logger.error(f"An error occurred during the backtest: {e}", exc_info=True)
     
@@ -137,13 +133,12 @@ def run_backtest(custom: bool, log_levels: Optional[Dict[str, str]] = None):
 
 def analyze_results(custom: bool):
     if custom:
-        metrics_file = get_user_input("Enter path to metrics data file", DEFAULT_METRICS_PATH)
+        metrics_file = get_user_input("Enter path of market data file", DEFAULT_DATA_PATH)
     else:
-        metrics_file = DEFAULT_METRICS_PATH
-
+        metrics_file = DEFAULT_DATA_PATH
     try:
-        metrics_module = MetricsModule.load_metrics_data(metrics_file)
-        metrics_module.print_summary()
+        metrics_module = MetricsModule(market_data_path=metrics_file, base_currency=BASE_CURRENCY)
+        metrics_module.run()
     except Exception as e:
         print(f"Error analyzing results: {str(e)}")
 

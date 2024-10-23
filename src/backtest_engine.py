@@ -138,9 +138,10 @@ class BacktestEngine:
         # save all signals to csv
         self.signal_database.to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/signals.csv")
         self.trade_manager.export_trades_to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/trades.csv")
-        all_trades = self.trade_manager.get_trade()
-        all_signals = self.signal_database.get_signals()
-        self.metrics.print_summary()
+        self.portfolio.to_csv("C:/Users/antoi/Documents/Netechoppe/StableTrade/portfolio.csv")
+        
+        # Run metrics and print summary
+        self.metrics.run()
 
     def _process_timestamp(self, timestamp: int) -> None:
         """Process a single timestamp in the backtest."""

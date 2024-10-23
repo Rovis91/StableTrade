@@ -27,6 +27,7 @@ data/*.json
 *.prof
 *.txt
 *.json
+*.png
 
 # Strategy files
 context.md

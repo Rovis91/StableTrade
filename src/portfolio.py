@@ -1,3 +1,4 @@
+import csv
 from typing import Dict, List
 from src.logger import setup_logger
 
@@ -412,3 +413,27 @@ class Portfolio:
             'holdings': self.holdings.copy()
         })
         self.logger.debug(f"Portfolio state stored at timestamp {timestamp}")
+
+    def to_csv(self, filepath: str) -> None:
+        """
+        Save the portfolio state to a CSV file.
+
+        Args:
+            filepath (str): The path to save the portfolio state to.
+        """
+        try:
+            if not self.history:
+                raise ValueError("Portfolio history is empty. Cannot save portfolio state.")
+            with open(filepath, 'w', newline='') as csvfile:
+                fieldnames = list(self.history[0].keys())
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                writer.writeheader()
+                for state in self.history:
+                    writer.writerow(state)
+
+            self.logger.info(f"Portfolio state saved to {filepath}")
+
+        except Exception as e:
+            self.logger.error(f"Error saving portfolio state to CSV: {str(e)}")
+            raise
