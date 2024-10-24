@@ -10,27 +10,91 @@ from pathlib import Path
 import ast
 import os
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Union, List, Set
 
 class MetricsModule:
-    def __init__(self, market_data_path: str, base_currency: str, 
-                 risk_free_rate: float = 0.01, log_level: int = logging.INFO):
+    """MetricsModule with configurable metric groups and silent mode."""
+    
+    METRIC_GROUPS = {
+        'portfolio': {
+            'total_return',
+            'max_drawdown',
+            'sharpe_ratio',
+            'volatility',
+            'avg_monthly_return',
+            'monthly_returns',
+            'best_daily_return',
+            'worst_daily_return',
+            'initial_value',
+            'final_value'
+        },
+        'trade': {
+            'total_trades',
+            'win_rate',
+            'profit_factor',
+            'average_trade_duration',
+            'total_profit',
+            'avg_profit_per_trade',
+            'winning_trades',
+            'losing_trades',
+            'largest_win',
+            'largest_loss',
+            'avg_win',
+            'avg_loss',
+            'total_fees'
+        },
+        'basic': {
+            'total_return',
+            'sharpe_ratio',
+            'max_drawdown',
+            'profit_factor',
+            'win_rate'
+        }
+    }
+    
+    def __init__(self, 
+                 market_data_path: str, 
+                 base_currency: str,
+                 metric_groups: Union[List[str], str] = 'basic',
+                 silent: bool = False,
+                 risk_free_rate: float = 0.01):
+        """
+        Initialize MetricsModule with selected metric groups.
+
+        Args:
+            market_data_path (str): Path to market data
+            base_currency (str): Base currency for calculations
+            metric_groups (Union[List[str], str]): Metric groups to calculate ('basic', 'portfolio', 'trade')
+                                                  or list of groups
+            silent (bool): If True, suppress console output and chart generation
+            risk_free_rate (float): Risk-free rate for Sharpe ratio calculation
+        """
         self.market_data_path = market_data_path
-        self.data_directory = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.base_currency = base_currency
         self.risk_free_rate = risk_free_rate
+        self.silent = silent
         
-        # Setup logging
+        # Handle metric groups selection
+        if isinstance(metric_groups, str):
+            metric_groups = [metric_groups]
+        
+        self.selected_metrics: Set[str] = set()
+        for group in metric_groups:
+            if group not in self.METRIC_GROUPS:
+                raise ValueError(f"Invalid metric group: {group}")
+            self.selected_metrics.update(self.METRIC_GROUPS[group])
+        
+        # Setup paths
+        self.data_directory = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.output_dir = Path(self.data_directory) / 'output'
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+                
+        # Setup logger
         self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(log_level)
-        
-        # Add a handler if none exists
         if not self.logger.handlers:
             handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                '%Y-%m-%d %H:%M:%S'
-            ))
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
     def load_data(self) -> Dict[str, Any]:
@@ -411,55 +475,74 @@ class MetricsModule:
         except Exception as e:
             self.logger.error(f"Error generating summary: {str(e)}")
             raise
-
-    def run(self) -> None:
+    
+    def run(self) -> Dict[str, Any]:
         """
-        Main method to run all calculations and generate output.
+        Run metrics calculation and return results dictionary.
+        Always returns the metrics regardless of silent mode.
         """
         try:
-            start_time = time.time()
-            self.logger.info("Starting metrics calculation process...")
-            
-            # Load data once
             data = self.load_data()
-            self.logger.info("Data loaded successfully")
+            summary, portfolio_history = self.generate_summary(data)
             
-            # Ensure portfolio values are calculated
-            if 'total_value' not in data['portfolio_history'].columns:
-                data['portfolio_history']['total_value'] = data['portfolio_history']['holdings'].apply(
-                    lambda x: sum(x.values())
-                )
+            # Get selected metrics
+            metrics_dict = self._calculate_metrics(data)
             
-            # Generate summary and get processed portfolio history
-            summary, processed_portfolio = self.generate_summary(data)
+            # Save metrics
+            self._save_metrics(metrics_dict)
             
-            # Create output directory
-            output_dir = Path(self.data_directory) / 'output'
-            output_dir.mkdir(exist_ok=True)
+            # Only generate output if not silent
+            if not self.silent:
+                self._print_summary_tables(summary)
+                self._generate_charts(portfolio_history, self.output_dir, 
+                                    datetime.now().strftime('%Y%m%d_%H%M%S'))
             
-            # Save summary to JSON
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            json_path = output_dir / f'metrics_summary_{timestamp}.json'
-            with open(json_path, 'w') as f:
-                json.dump(summary, f, indent=4)
-            
-            # Print summary tables to console
-            self._print_summary_tables(summary)
-            
-            # Generate and save charts using processed portfolio history
-            self._generate_charts(processed_portfolio, output_dir, timestamp)
-            
-            self.logger.info(f"Process completed in {time.time() - start_time:.2f} seconds")
-            print(f"\nResults saved to {output_dir}")
-            
+            return metrics_dict  # Always return metrics, regardless of silent mode
+
         except Exception as e:
-            self.logger.error(f"Error during metrics calculation: {str(e)}")
-            raise
+            self.logger.error(f"Error calculating metrics: {e}")
+            return {}  
+         
+    def _calculate_metrics(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate metrics based on the selected metrics."""
+        try:
+            summary, _ = self.generate_summary(data)
+            metrics = {}
+            
+            # Map from summary to flat structure
+            for metric in self.selected_metrics:
+                # Check in portfolio metrics
+                if metric in summary['portfolio_metrics']:
+                    metrics[metric] = summary['portfolio_metrics'][metric]
+                # Check in trade metrics
+                elif metric in summary['trade_metrics']:
+                    metrics[metric] = summary['trade_metrics'][metric]
+                # Check in signal metrics
+                elif metric in summary['signal_metrics']:
+                    metrics[metric] = summary['signal_metrics'][metric]
+
+            return metrics
+
+        except Exception as e:
+            self.logger.error(f"Error calculating metrics: {str(e)}", exc_info=True)  # Added exc_info
+            return {}
         
+    def _save_metrics(self, metrics: Dict[str, Any]) -> None:
+        """Save metrics to a JSON file."""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        metrics_file = self.output_dir / f'metrics_{timestamp}.json'
+        
+        with open(metrics_file, 'w') as f:
+            json.dump(metrics, f, indent=4)
+            
+        self.logger.info(f"Saved metrics to {metrics_file}")  
+
     def _print_summary_tables(self, summary: Dict[str, Any]) -> None:
         """
         Print formatted summary tables to console.
         """
+        if self.silent:
+            return
         print("\n=== TRADING METRICS SUMMARY ===\n")
         
         # Portfolio Performance
@@ -514,6 +597,8 @@ class MetricsModule:
         """
         Generate improved portfolio value chart with better formatting.
         """
+        if self.silent:
+            return
         try:
             chart_start = time.time()
             
@@ -600,6 +685,11 @@ class MetricsModule:
         except Exception as e:
             self.logger.error(f"Error generating chart: {str(e)}", exc_info=True)
             raise
+    
+    @classmethod
+    def get_available_groups(cls) -> Dict[str, Set[str]]:
+        """Get all available metric groups and their metrics."""
+        return cls.METRIC_GROUPS
 
 if __name__ == "__main__":
     market_data_path = r"D:\StableTrade_dataset\EUTEUR_1m\EUTEUR_1m_final_merged.csv"

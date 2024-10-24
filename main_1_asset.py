@@ -159,7 +159,7 @@ def main():
             'signal_database': 'WARNING',
             'depeg_strategy': 'WARNING',
             'portfolio': 'WARNING',
-            'metrics': 'WARNING',
+            'metrics': 'INFO',
             'backtest_engine': 'WARNING'
         }
 

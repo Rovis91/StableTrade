@@ -27,11 +27,11 @@ def main():
     """
     try:
         param_ranges = {
-            'depeg_threshold': {'start': 1, 'end': 5, 'step': 0.5},
-            'trade_amount': {'start': 0.1, 'end': 0.5, 'step': 0.2},
-            'stop_loss': {'start': 0.01, 'end': 0.05, 'step': 0.01},
+            'depeg_threshold': {'start': 1, 'end': 2, 'step': 1},
+            'trade_amount': {'start': 0.1, 'end': 0.2, 'step': 0.1},
+            'stop_loss': {'start': 0.01, 'end': 0.02, 'step': 0.01},
             'take_profit': {'start': 0.05, 'end': 0.10, 'step': 0.05},
-            'trailing_stop': {'start': 0.005, 'end': 0.03, 'step': 0.005}
+            'trailing_stop': {'start': 0.005, 'end': 0.01, 'step': 0.005}
         }
 
         base_config = {

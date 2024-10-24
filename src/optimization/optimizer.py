@@ -111,7 +111,9 @@ class StrategyOptimizer:
 
             metrics_module = MetricsModule(
                 market_data_path=self.base_config['data_path'],
-                base_currency=self.base_config['base_currency']
+                base_currency=self.base_config['base_currency'],
+                metric_groups='basic',  
+                silent=True 
             )
 
             backtest_engine = BacktestEngine(
@@ -130,13 +132,16 @@ class StrategyOptimizer:
             backtest_engine.run_backtest()
 
             # Get metrics
-            metrics_summary = metrics_module.get_summary()
+            metrics = metrics_module.run()
 
-            return {
+            result = {
                 'parameters': params,
-                'metrics': metrics_summary
+                'metrics': metrics,
+                'timestamp': datetime.now().strftime('%Y%m%d_%H%M%S')
             }
-
+            
+            return result
+        
         except Exception as e:
             print(f"\nError in backtest with params {params}: {str(e)}")  # Debug output
             return {
@@ -248,29 +253,40 @@ class StrategyOptimizer:
             Dict[str, Any]: Summary of the optimization results.
         """
         try:
-            summary = self.results.get_summary() if not self.results.results.empty else {}
-            total_time = time.time() - start_time
-
-            summary.update({
-                'runtime': {
-                    'total_seconds': total_time,
-                    'average_per_combination': total_time / len(results) if results else 0
-                },
+            summary = {
+                'total_runs': len(results),
+                'successful_runs': len([r for r in results if 'error' not in r]),
+                'failed_runs': len([r for r in results if 'error' in r]),
+                'best_results': {},
                 'parameters': self.param_grid.get_param_info(),
-                'file_locations': {
-                    'base_directory': str(self.output_dir),
-                    'plots_directory': str(self.output_dir / 'plots'),
-                    'results_csv': str(self.output_dir / 'optimization_results.csv')
+                'runtime': {
+                    'total_seconds': time.time() - start_time,
+                    'average_per_run': (time.time() - start_time) / len(results) if results else 0
                 }
-            })
+            }
 
-            with open(self.output_dir / 'optimization_summary.json', 'w') as f:
+            # Find best results for each metric
+            successful_results = [r for r in results if 'error' not in r]
+            if successful_results:
+                metrics = successful_results[0]['metrics'].keys()
+                for metric in metrics:
+                    best_result = max(successful_results, 
+                                    key=lambda x: x['metrics'].get(metric, float('-inf')))
+                    summary['best_results'][metric] = {
+                        'value': best_result['metrics'][metric],
+                        'parameters': best_result['parameters']
+                    }
+
+            # Save summary
+            output_path = self.output_dir / 'optimization_summary.json'
+            with open(output_path, 'w') as f:
                 json.dump(summary, f, indent=4)
 
             return summary
 
         except Exception as e:
-            return {'error': str(e)}
+            self.logger.error(f"Error creating optimization summary: {str(e)}")
+            return {}
 
     def estimate_runtime(self, single_run_time: float = 60) -> Dict[str, Any]:
         """
