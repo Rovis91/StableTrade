@@ -1,32 +1,34 @@
-"""
-celery_tasks.py
+import sys
+from pathlib import Path
 
-This module handles distributed backtesting using Celery.
-It defines tasks for running individual parameter combinations
-and manages the parallel execution of optimization runs.
-"""
+# Add the project root to the system path for imports
+project_root = str(Path(__file__).resolve().parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
-from celery import Celery, group, chord
+# Import necessary modules and packages
+from celery import Celery, group
 from typing import Dict, List, Any
 import logging
-from pathlib import Path
 import json
 import time
 
-from src.backtest_engine import BacktestEngine
-from src.portfolio import Portfolio
-from src.trade_manager import TradeManager
-from src.strategy.depeg_strategy import DepegStrategy
-from src.signal_database import SignalDatabase
-from src.metrics import MetricsModule
+from ..backtest_engine import BacktestEngine
+from ..portfolio import Portfolio
+from ..trade_manager import TradeManager
+from ..strategy.depeg_strategy import DepegStrategy
+from ..signal_database import SignalDatabase
+from ..metrics import MetricsModule
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Initialize Celery
-celery_app = Celery('optimization_tasks',
-                    broker='redis://localhost:6379/0',
-                    backend='redis://localhost:6379/0')
+# Initialize Celery with Redis as the broker and backend
+celery_app = Celery(
+    'optimization_tasks',
+    broker='redis://localhost:6379/0',
+    backend='redis://localhost:6379/0'
+)
 
 # Celery configuration
 celery_app.conf.update(
@@ -36,10 +38,15 @@ celery_app.conf.update(
     timezone='UTC',
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=3600,  # 1 hour time limit per task
-    task_soft_time_limit=3300,  # Soft limit 55 minutes
+    task_time_limit=3600,  # 1-hour time limit per task
+    task_soft_time_limit=3300,  # Soft limit of 55 minutes
     worker_prefetch_multiplier=1,  # Each worker takes one task at a time
-    task_acks_late=True  # Tasks are acknowledged after completion
+    task_acks_late=True,  # Tasks are acknowledged after completion
+    result_backend='redis://localhost:6379/0',  # Ensure this matches your Redis setup
+    task_ignore_result=False,  # We need to track results
+    task_always_eager=False,  # Run tasks asynchronously
+    worker_max_tasks_per_child=50,  # Restart worker after 50 tasks
+    worker_max_memory_per_child=200000  # Restart worker if memory usage exceeds 200MB
 )
 
 @celery_app.task(bind=True, name='run_backtest')
@@ -48,20 +55,22 @@ def run_backtest(self, param_combination: Dict[str, float], base_config: Dict[st
     Run a single backtest with given parameters.
 
     Args:
-        param_combination: Dictionary of parameter values to test
-        base_config: Base configuration for the backtest
+        param_combination (Dict[str, float]): Dictionary of parameter values to test
+        base_config (Dict[str, Any]): Base configuration for the backtest
 
     Returns:
-        Dictionary containing parameters and their corresponding metrics or error
+        Dict[str, Any]: Parameters and their corresponding metrics or error
     """
     try:
-        logger.info(f"Starting backtest with parameters: {param_combination}")
+        task_id = self.request.id
+        logger.info(f"Starting backtest {task_id} with parameters: {param_combination}")
         start_time = time.time()
 
         # Initialize components for this backtest
         trade_manager = TradeManager(base_currency=base_config['base_currency'])
         signal_database = SignalDatabase(trade_manager)
 
+        # Initialize the strategy
         strategy = DepegStrategy(
             market=base_config['asset'],
             trade_manager=trade_manager,
@@ -72,6 +81,7 @@ def run_backtest(self, param_combination: Dict[str, float], base_config: Dict[st
             trailing_stop=param_combination.get('trailing_stop')
         )
 
+        # Setup portfolio configuration
         portfolio_config = {
             base_config['asset']: {
                 'market_type': strategy.config['market_type'],
@@ -81,6 +91,7 @@ def run_backtest(self, param_combination: Dict[str, float], base_config: Dict[st
             }
         }
 
+        # Initialize the portfolio
         portfolio = Portfolio(
             initial_cash=base_config['initial_cash'],
             portfolio_config=portfolio_config,
@@ -89,6 +100,7 @@ def run_backtest(self, param_combination: Dict[str, float], base_config: Dict[st
             base_currency=base_config['base_currency']
         )
 
+        # Initialize the metrics module
         metrics_module = MetricsModule(
             market_data_path=base_config['data_path'],
             base_currency=base_config['base_currency']
@@ -109,6 +121,7 @@ def run_backtest(self, param_combination: Dict[str, float], base_config: Dict[st
         backtest_engine.preprocess_data()
         backtest_engine.run_backtest()
 
+        # Get metrics summary
         metrics_summary = metrics_module.get_summary()
 
         result = {
@@ -116,17 +129,18 @@ def run_backtest(self, param_combination: Dict[str, float], base_config: Dict[st
             'metrics': metrics_summary,
             'execution_time': time.time() - start_time
         }
-
-        logger.info(f"Completed backtest with parameters: {param_combination}")
+        duration = time.time() - start_time
+        logger.info(f"Completed backtest {task_id} in {duration:.2f} seconds")
         return result
 
     except Exception as e:
-        logger.error(f"Error in backtest task: {str(e)}", exc_info=True)
+        logger.error(f"Task {self.request.id} failed: {str(e)}", exc_info=True)
         return {
             'parameters': param_combination,
             'error': str(e),
             'status': 'failed'
         }
+
 
 @celery_app.task(name='process_optimization_results')
 def process_optimization_results(results: List[Dict[str, Any]], output_dir: str) -> Dict[str, Any]:
@@ -134,17 +148,21 @@ def process_optimization_results(results: List[Dict[str, Any]], output_dir: str)
     Process results from all backtests, summarize, and save them.
 
     Args:
-        results: List of results from individual backtests
-        output_dir: Directory to save results
+        results (List[Dict[str, Any]]): List of results from individual backtests
+        output_dir (str): Directory to save results
 
     Returns:
-        Summary of optimization results
+        Dict[str, Any]: Summary of optimization results
     """
     try:
-        logger.info("Processing optimization results")
+        logger.info(f"Processing {len(results)} optimization results")
 
         successful_results = [r for r in results if 'error' not in r]
         failed_results = [r for r in results if 'error' in r]
+
+        logger.info(f"Successfully processed {len(successful_results)} results")
+        if failed_results:
+            logger.warning(f"Found {len(failed_results)} failed results")
 
         summary = {
             'total_runs': len(results),
@@ -153,7 +171,10 @@ def process_optimization_results(results: List[Dict[str, Any]], output_dir: str)
             'best_results': {},
             'execution_statistics': {
                 'total_time': sum(r.get('execution_time', 0) for r in successful_results),
-                'average_time': sum(r.get('execution_time', 0) for r in successful_results) / len(successful_results) if successful_results else 0
+                'average_time': (
+                    sum(r.get('execution_time', 0) for r in successful_results) /
+                    len(successful_results) if successful_results else 0
+                )
             }
         }
 
@@ -185,54 +206,89 @@ def process_optimization_results(results: List[Dict[str, Any]], output_dir: str)
         return summary
 
     except Exception as e:
-        logger.error(f"Error processing optimization results: {str(e)}", exc_info=True)
+        logger.error(f"Error processing results: {str(e)}", exc_info=True)
         raise
 
-def create_optimization_tasks(param_combinations: List[Dict[str, float]], base_config: Dict[str, Any], output_dir: str) -> group:
+
+def create_optimization_tasks(param_combinations: List[Dict[str, float]], base_config: Dict[str, Any], output_dir: str):
     """
     Create a group of Celery tasks for parameter optimization.
 
     Args:
-        param_combinations: List of parameter combinations to test
-        base_config: Base configuration for backtests
-        output_dir: Directory to save results
+        param_combinations (List[Dict[str, float]]): List of parameter combinations to test
+        base_config (Dict[str, Any]): Base configuration for backtests
+        output_dir (str): Directory to save results
 
     Returns:
-        Celery group of tasks
+        AsyncResult: Async result from the group of tasks
     """
     try:
-        logger.info(f"Creating optimization tasks for {len(param_combinations)} combinations")
+        total_combinations = len(param_combinations)
+        logger.info(f"Creating optimization tasks for {total_combinations} combinations")
 
-        backtest_tasks = [run_backtest.s(params, base_config) for params in param_combinations]
+        # Create tasks in smaller chunks to avoid memory issues
+        chunk_size = 1000
+        all_tasks = []
 
-        workflow = chord(backtest_tasks, process_optimization_results.s(output_dir))
+        for i in range(0, total_combinations, chunk_size):
+            chunk = param_combinations[i:i + chunk_size]
+            tasks = [run_backtest.s(params, base_config) for params in chunk]
+            all_tasks.extend(tasks)
+            logger.info(f"Created tasks {i} to {min(i + chunk_size, total_combinations)}")
 
-        logger.info("Successfully created optimization tasks")
-        return workflow
+        # Create workflow with chunks
+        workflow = group(all_tasks) | process_optimization_results.s(output_dir)
+
+        # Start the workflow
+        result = workflow.apply_async()
+        logger.info("Started optimization workflow")
+
+        return result
 
     except Exception as e:
         logger.error(f"Error creating optimization tasks: {str(e)}", exc_info=True)
         raise
 
-def monitor_task_progress(task_group):
+
+def monitor_task_progress(task_group_result):
     """
-    Monitor the progress of Celery tasks in a task group.
+    Monitor the progress of Celery tasks.
 
     Args:
-        task_group: Celery group of tasks to monitor
+        task_group_result (AsyncResult): Async result from a group of tasks
     """
     try:
-        total_tasks = len(task_group.tasks)
-        completed, failed = 0, 0
+        logger.info("Starting task monitoring")
 
-        while completed + failed < total_tasks:
-            time.sleep(5)  # Check progress every 5 seconds
-            completed = sum(1 for task in task_group.tasks if task.status == 'SUCCESS')
-            failed = sum(1 for task in task_group.tasks if task.status == 'FAILURE')
+        if not task_group_result:
+            logger.error("No task result to monitor")
+            return
 
-            logger.info(f"Progress: {completed}/{total_tasks} completed, {failed} failed")
+        while not task_group_result.ready():
+            # Get all subtasks
+            if hasattr(task_group_result, 'children'):
+                subtasks = task_group_result.children
+            else:
+                subtasks = [task_group_result]
 
-        logger.info(f"All tasks completed. Successful: {completed}, Failed: {failed}")
+            total = len(subtasks)
+            completed = sum(1 for task in subtasks if task.ready())
+            failed = sum(1 for task in subtasks if task.failed())
+            pending = total - completed
+
+            logger.info(f"Progress: {completed}/{total} completed, {failed} failed, {pending} pending")
+
+            # Calculate and log estimated time remaining
+            if completed > 0:
+                time_elapsed = time.time() - task_group_result.timestamp
+                time_per_task = time_elapsed / completed
+                time_remaining = time_per_task * pending
+                hours_remaining = time_remaining / 3600
+                logger.info(f"Estimated time remaining: {hours_remaining:.2f} hours")
+
+            time.sleep(10)  # Check every 10 seconds
+
+        logger.info("All tasks completed!")
 
     except Exception as e:
         logger.error(f"Error monitoring tasks: {str(e)}", exc_info=True)

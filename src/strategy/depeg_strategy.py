@@ -25,7 +25,7 @@ class DepegStrategy(Strategy):
             'market_type': 'spot',
             'fees': {'entry': 0.001, 'exit': 0.001},
             'max_trades': 10,  
-            'max_exposure': 0.70
+            'max_exposure': 0.99
         }
 
         if depeg_threshold <= 0:

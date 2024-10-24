@@ -3,6 +3,7 @@ from typing import Dict, List, Any, Optional
 import logging
 from pathlib import Path
 
+# Configure logger
 logger = logging.getLogger(__name__)
 
 class OptimizationResults:
@@ -10,6 +11,7 @@ class OptimizationResults:
     Manages and analyzes optimization results, including the storage, 
     analysis, and export of parameter combinations and performance metrics.
     """
+    
     def __init__(self):
         """Initialize the OptimizationResults manager."""
         self.results = pd.DataFrame()
@@ -22,12 +24,12 @@ class OptimizationResults:
         Add a single optimization result.
         
         Args:
-            params: Dictionary of parameter names and values
-            metrics: Dictionary of metric names and values
+            params (Dict[str, float]): Dictionary of parameter names and values.
+            metrics (Dict[str, float]): Dictionary of metric names and values.
         """
         if not self.validate_result(params, metrics):
             raise ValueError("Invalid result format")
-            
+        
         try:
             row = {**params, **metrics}
             self.results = pd.concat([self.results, pd.DataFrame([row])], ignore_index=True)
@@ -46,11 +48,11 @@ class OptimizationResults:
         Validate new results before adding them.
         
         Args:
-            params: Dictionary of parameter values
-            metrics: Dictionary of metric values
+            params (Dict[str, float]): Dictionary of parameter values.
+            metrics (Dict[str, float]): Dictionary of metric values.
             
         Returns:
-            bool: True if the result is valid, False otherwise
+            bool: True if the result is valid, False otherwise.
         """
         if not self.param_columns:  # First result defines the structure
             return all(isinstance(v, (int, float)) for v in {**params, **metrics}.values())
@@ -64,7 +66,7 @@ class OptimizationResults:
         Save results to a CSV file.
         
         Args:
-            filepath: Path where the CSV file will be saved
+            filepath (str): Path where the CSV file will be saved.
         """
         try:
             if self.results.empty:
@@ -83,7 +85,7 @@ class OptimizationResults:
         Load results from a CSV file.
         
         Args:
-            filepath: Path to the CSV file
+            filepath (str): Path to the CSV file.
         """
         try:
             self.results = pd.read_csv(filepath)
@@ -98,8 +100,7 @@ class OptimizationResults:
         if not self.results.empty:
             all_columns = set(self.results.columns)
             self.param_columns = [col for col in all_columns 
-                                  if any(param in col.lower() 
-                                         for param in ['threshold', 'amount', 'stop', 'profit'])]
+                                  if any(param in col.lower() for param in ['threshold', 'amount', 'stop', 'profit'])]
             self.metric_columns = list(all_columns - set(self.param_columns))
 
     def filter_results(self, conditions: Dict[str, Any]) -> pd.DataFrame:
@@ -107,11 +108,11 @@ class OptimizationResults:
         Filter results based on conditions.
         
         Args:
-            conditions: Dict of column names and their filter conditions
+            conditions (Dict[str, Any]): Dict of column names and their filter conditions.
                 e.g., {'total_return': lambda x: x > 0, 'sharpe_ratio': lambda x: x > 1}
         
         Returns:
-            Filtered DataFrame
+            pd.DataFrame: Filtered DataFrame.
         """
         filtered = self.results.copy()
         for col, condition in conditions.items():
@@ -123,7 +124,7 @@ class OptimizationResults:
         Calculate statistics for parameters and metrics.
         
         Returns:
-            Dictionary containing statistics for each parameter and metric
+            Dict[str, Dict[str, float]]: Dictionary containing statistics for each parameter and metric.
         """
         if self.results.empty:
             logger.warning("No results available for statistics calculation")
@@ -150,7 +151,7 @@ class OptimizationResults:
         Calculate correlations between parameters and metrics.
         
         Returns:
-            DataFrame containing correlation matrix
+            pd.DataFrame: DataFrame containing the correlation matrix.
         """
         if self.results.empty:
             logger.warning("No results available for correlation calculation")
@@ -169,11 +170,11 @@ class OptimizationResults:
         Get performance statistics for a specific parameter.
         
         Args:
-            param_name: Name of the parameter to analyze
-            metric_name: Name of the metric to use for analysis
+            param_name (str): Name of the parameter to analyze.
+            metric_name (str): Name of the metric to use for analysis.
             
         Returns:
-            Dictionary containing parameter performance analysis
+            Dict[str, Any]: Dictionary containing parameter performance analysis.
         """
         if param_name not in self.param_columns or metric_name not in self.metric_columns:
             raise ValueError(f"Invalid parameter '{param_name}' or metric '{metric_name}'")
@@ -204,11 +205,11 @@ class OptimizationResults:
         Analyze how changes in a parameter affect a specific metric.
         
         Args:
-            param_name: Name of the parameter to analyze
-            metric_name: Name of the metric to analyze
+            param_name (str): Name of the parameter to analyze.
+            metric_name (str): Name of the metric to analyze.
             
         Returns:
-            Dictionary containing sensitivity analysis
+            Dict[str, Any]: Dictionary containing sensitivity analysis.
         """
         if self.results.empty:
             return {}
@@ -239,11 +240,11 @@ class OptimizationResults:
         Get the top N parameter combinations based on a specific metric.
         
         Args:
-            metric_name: Name of the metric to sort by
-            n: Number of top results to return
+            metric_name (str): Name of the metric to sort by.
+            n (int): Number of top results to return (default: 10).
             
         Returns:
-            DataFrame containing the top N results
+            pd.DataFrame: DataFrame containing the top N results.
         """
         if metric_name not in self.metric_columns:
             raise ValueError(f"Invalid metric name: {metric_name}")
@@ -256,17 +257,16 @@ class OptimizationResults:
             logger.error(f"Error getting top results: {str(e)}")
             raise
 
-    def compare_results(self, other: 'OptimizationResults', 
-                        metrics: Optional[List[str]] = None) -> Dict[str, Any]:
+    def compare_results(self, other: 'OptimizationResults', metrics: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Compare results with another optimization run.
         
         Args:
-            other: Another OptimizationResults instance to compare with
-            metrics: List of metrics to compare (optional)
+            other (OptimizationResults): Another OptimizationResults instance to compare with.
+            metrics (Optional[List[str]]): List of metrics to compare (optional).
             
         Returns:
-            Dictionary containing comparison statistics
+            Dict[str, Any]: Dictionary containing comparison statistics.
         """
         if metrics is None:
             metrics = self.metric_columns
@@ -288,7 +288,7 @@ class OptimizationResults:
         Get a summary of the optimization results.
         
         Returns:
-            Dictionary containing summary information
+            Dict[str, Any]: Dictionary containing summary information.
         """
         if self.results.empty:
             logger.warning("No results available for summary")
