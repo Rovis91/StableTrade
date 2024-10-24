@@ -37,14 +37,21 @@ class StrategyOptimizer:
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_dir = Path(output_dir or f"optimization_results_{timestamp}")
+        
+        # Create directory structure
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.report_dir = self.output_dir / 'optimization_report'
+        self.plots_dir = self.output_dir / 'plots'
+        self.report_dir.mkdir(exist_ok=True)
+        self.plots_dir.mkdir(exist_ok=True)
 
         self.param_grid = ParameterGrid(param_ranges)
         self.results = OptimizationResults()
-        self.visualizer = OptimizationVisualizer(self.results, str(self.output_dir))
+        self.visualizer = OptimizationVisualizer(self.results, str(self.plots_dir))
         self.base_config = base_config
         
         logger.info(f"Initialized StrategyOptimizer with {self.param_grid.total_combinations} combinations")
+        logger.info(f"Output directory structure created at {self.output_dir}")
 
     @staticmethod
     def validate_config(config: Dict[str, Any]) -> None:
@@ -234,8 +241,6 @@ class StrategyOptimizer:
                 return
                 
             logger.info("Generating visualization report")
-            plots_dir = self.output_dir / 'plots'
-            plots_dir.mkdir(exist_ok=True)
             self.visualizer.create_optimization_report()
             
         except Exception as e:
@@ -262,6 +267,11 @@ class StrategyOptimizer:
                 'runtime': {
                     'total_seconds': time.time() - start_time,
                     'average_per_run': (time.time() - start_time) / len(results) if results else 0
+                },
+                'file_locations': {
+                    'base_directory': str(self.output_dir),
+                    'report_directory': str(self.report_dir),
+                    'plots_directory': str(self.plots_dir)
                 }
             }
 
@@ -277,15 +287,22 @@ class StrategyOptimizer:
                         'parameters': best_result['parameters']
                     }
 
-            # Save summary
-            output_path = self.output_dir / 'optimization_summary.json'
-            with open(output_path, 'w') as f:
+            # Save summary to the report directory
+            summary_path = self.report_dir / 'optimization_summary.json'
+            with open(summary_path, 'w') as f:
                 json.dump(summary, f, indent=4)
+
+            # Save failed runs separately if any exist
+            failed_results = [r for r in results if 'error' in r]
+            if failed_results:
+                failed_path = self.report_dir / 'failed_runs.json'
+                with open(failed_path, 'w') as f:
+                    json.dump(failed_results, f, indent=4)
 
             return summary
 
         except Exception as e:
-            self.logger.error(f"Error creating optimization summary: {str(e)}")
+            logger.error(f"Error creating optimization summary: {str(e)}")
             return {}
 
     def estimate_runtime(self, single_run_time: float = 60) -> Dict[str, Any]:
@@ -315,11 +332,18 @@ class StrategyOptimizer:
         }
 
     def save_results(self) -> None:
-        """Save results to CSV."""
+        """Save results to CSV in the report directory."""
         try:
-            results_path = self.output_dir / 'optimization_results.csv'
+            results_path = self.report_dir / 'optimization_results.csv'
             self.results.save_to_csv(str(results_path))
             logger.info(f"Saved results to {results_path}")
+
+            # Save parameter combinations
+            param_path = self.report_dir / 'parameter_combinations.json'
+            with open(param_path, 'w') as f:
+                json.dump(self.param_grid.get_param_info(), f, indent=4)
+            logger.info(f"Saved parameter combinations to {param_path}")
+
         except Exception as e:
             logger.error(f"Error saving results: {str(e)}", exc_info=True)
             raise

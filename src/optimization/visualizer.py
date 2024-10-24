@@ -204,9 +204,6 @@ class OptimizationVisualizer:
         try:
             logger.info("Starting optimization report generation")
             
-            report_dir = self.output_dir / 'optimization_report'
-            report_dir.mkdir(exist_ok=True)
-            
             self.plot_correlation_heatmap()
             
             for param in self.results.param_columns:
@@ -216,8 +213,8 @@ class OptimizationVisualizer:
             
             self.plot_metric_distributions()
             
-            logger.info(f"Generated optimization report in {report_dir}")
-            return str(report_dir)
+            logger.info(f"Generated optimization plots in {self.output_dir}")
+            return str(self.output_dir)
             
         except Exception as e:
             logger.error(f"Error creating optimization report: {str(e)}")
