@@ -8,7 +8,9 @@ from tqdm import tqdm
 
 from .parameter_grid import ParameterGrid
 from .result_manager import OptimizationResults
-from .visualizer import OptimizationVisualizer
+from src.optimization.visualization.config import VisualizationConfig
+from src.optimization.visualization.strategy_visualizer import StrategyVisualizer 
+from src.optimization.visualization.report_generator import ReportGenerator as VisualizationReporter
 from ..backtest_engine import BacktestEngine
 from ..portfolio import Portfolio
 from ..trade_manager import TradeManager
@@ -47,8 +49,11 @@ class StrategyOptimizer:
 
         self.param_grid = ParameterGrid(param_ranges)
         self.results = OptimizationResults()
-        self.visualizer = OptimizationVisualizer(self.results, str(self.plots_dir))
         self.base_config = base_config
+        
+        # Initialize visualizer
+        visualization_config = VisualizationConfig()
+        self.visualizer = StrategyVisualizer(results_manager=self.results, config=visualization_config)
         
         logger.info(f"Initialized StrategyOptimizer with {self.param_grid.total_combinations} combinations")
         logger.info(f"Output directory structure created at {self.output_dir}")
@@ -221,7 +226,7 @@ class StrategyOptimizer:
 
             # Generate reports
             print("Generating reports...")  # Debug output
-            self._generate_visualization_report()
+            self.visualizer.generate_complete_analysis()
             summary = self._create_optimization_summary(start_time, results)
             self.save_results()
 
@@ -232,19 +237,6 @@ class StrategyOptimizer:
             if 'progress_bar' in locals():
                 progress_bar.close()
             raise
-
-    def _generate_visualization_report(self) -> None:
-        """Generate visualization plots."""
-        try:
-            if self.results.results.empty:
-                logger.warning("No results available for visualization")
-                return
-                
-            logger.info("Generating visualization report")
-            self.visualizer.create_optimization_report()
-            
-        except Exception as e:
-            logger.error(f"Error generating visualizations: {str(e)}")
 
     def _create_optimization_summary(self, start_time: float, results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

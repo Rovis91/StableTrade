@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.optimization.visualizer import OptimizationVisualizer
+from src.optimization.visualization import OptimizationVisualizer
 
 # ------------------------- Fixtures -------------------------
 
