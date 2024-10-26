@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional, Union
 from datetime import datetime
 import pandas as pd
-
 from src.optimization.visualization import (
     StrategyVisualizer,
     VisualizationConfig,
@@ -14,14 +13,31 @@ from src.optimization.visualization import (
 )
 from src.optimization.optimizer import StrategyOptimizer
 from src.optimization.result_manager import OptimizationResults
+from src.strategy.depeg_strategy import DepegStrategy
+
+# At the start of your application
+from src.logger import set_log_config, set_log_levels, setup_logger
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+set_log_config(
+    save_logs=True,  # Enable file logging
+    max_log_files=10,  # Keep last 10 log files
+    log_dir='logs'  # Store logs in 'logs' directory
 )
-logger = logging.getLogger(__name__)
 
+# Set log levels for components
+# Set more verbose logging levels
+set_log_levels({
+    'main': 'INFO',
+    'optimizer': 'INFO',
+    'worker_manager': 'INFO',
+    'task_coordinator': 'INFO',
+    'optimization_task': 'INFO', 
+    'backtest_engine': 'INFO'
+})
+
+# Get logger for component
+logger = setup_logger('main')
 # Default configurations
 DEFAULT_PARAMS = {
     'depeg_threshold': {'start': 0.01, 'end': 0.10, 'step': 0.01},
@@ -33,7 +49,7 @@ DEFAULT_PARAMS = {
 
 DEFAULT_CONFIG = {
     'asset': 'EUTEUR',
-    'data_path': 'path/to/your/data.csv',
+    'data_path': 'D:\\StableTrade_dataset\\EUTEUR_1m\\EUTEUR_1m_final_merged.csv',
     'initial_cash': 10000,
     'base_currency': 'EUR'
 }
@@ -44,7 +60,7 @@ def get_user_input(prompt: str, default: Optional[str] = None) -> str:
         if default:
             user_input = input(f"{prompt} [{default}]: ").strip()
             return user_input if user_input else default
-        return input(f"{prompt}: ").strip()
+        return input(f"{prompt}: ").strip() or default
     except KeyboardInterrupt:
         logger.info("User interrupted input")
         raise
@@ -55,7 +71,8 @@ def get_user_input(prompt: str, default: Optional[str] = None) -> str:
 def run_optimization(
     param_ranges: Dict[str, Dict[str, float]],
     base_config: Dict[str, Any],
-    output_dir: Union[str, Path]
+    output_dir: Union[str, Path],
+    strategy_class=DepegStrategy  
 ) -> str:
     """Run optimization process and save results."""
     try:
@@ -66,6 +83,7 @@ def run_optimization(
             raise ValueError("Invalid parameter ranges or base configuration")
             
         optimizer = StrategyOptimizer(
+            strategy_class=strategy_class,  # Add strategy class
             param_ranges=param_ranges,
             base_config=base_config,
             output_dir=output_dir

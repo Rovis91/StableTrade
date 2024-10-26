@@ -1,341 +1,206 @@
-import time
-import logging
 import json
+import logging
+import time
+from typing import Dict, Any, Type, Optional
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Any, Optional
-from tqdm import tqdm
+from dataclasses import dataclass
+from src.logger import setup_logger
+from .task_coordinator import TaskCoordinator, OptimizationConfig
+from src.strategy.base_strategy import Strategy
+from src.optimization.visualization.strategy_visualizer import StrategyVisualizer
+from src.optimization.visualization.report_generator import ReportGenerator
 
-from .parameter_grid import ParameterGrid
-from .result_manager import OptimizationResults
-from src.optimization.visualization.config import VisualizationConfig
-from src.optimization.visualization.strategy_visualizer import StrategyVisualizer 
-from src.optimization.visualization.report_generator import ReportGenerator as VisualizationReporter
-from ..backtest_engine import BacktestEngine
-from ..portfolio import Portfolio
-from ..trade_manager import TradeManager
-from ..strategy.depeg_strategy import DepegStrategy
-from ..signal_database import SignalDatabase
-from ..metrics import MetricsModule
 
-# Configure logger
-logger = logging.getLogger(__name__)
+def _setup_logging(self) -> logging.Logger:
+    """Setup logging configuration."""
+    log_file = self.output_dir / 'optimization.log'
+    return setup_logger('optimizer', str(log_file))
 
+@dataclass
+class OptimizationResults:
+    """Container for optimization results."""
+    summary: Dict[str, Any]
+    best_params: Dict[str, Dict[str, float]]
+    metrics: Dict[str, Dict[str, float]]
+    execution_time: float
+    plots_directory: Path
+    report_path: Path
 
 class StrategyOptimizer:
+    """Main optimizer class coordinating the optimization process."""
+    
     def __init__(self, 
+                 strategy_class: Type[Strategy],
                  param_ranges: Dict[str, Dict[str, float]],
                  base_config: Dict[str, Any],
                  output_dir: Optional[str] = None):
         """
         Initialize the strategy optimizer.
-
+        
         Args:
-            param_ranges (Dict[str, Dict[str, float]]): Ranges for strategy parameters.
-            base_config (Dict[str, Any]): Base configuration for the backtest.
-            output_dir (Optional[str]): Directory to save optimization results.
+            strategy_class: The strategy class to optimize
+            param_ranges: Parameter ranges for optimization
+            base_config: Base configuration for backtesting
+            output_dir: Directory for saving results
         """
-        self.validate_config(base_config)
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path(output_dir or f"optimization_results_{timestamp}")
-        
-        # Create directory structure
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.report_dir = self.output_dir / 'optimization_report'
-        self.plots_dir = self.output_dir / 'plots'
-        self.report_dir.mkdir(exist_ok=True)
-        self.plots_dir.mkdir(exist_ok=True)
-
-        self.param_grid = ParameterGrid(param_ranges)
-        self.results = OptimizationResults()
+        self.strategy_class = strategy_class
+        self.param_ranges = param_ranges
         self.base_config = base_config
         
-        # Initialize visualizer
-        visualization_config = VisualizationConfig()
-        self.visualizer = StrategyVisualizer(results_manager=self.results, config=visualization_config)
+        # Setup output directory
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        self.output_dir = Path(output_dir or f'optimization_results_{timestamp}')
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"Initialized StrategyOptimizer with {self.param_grid.total_combinations} combinations")
-        logger.info(f"Output directory structure created at {self.output_dir}")
+        # Setup logging
+        self.logger = self._setup_logging()
+        
+        self.logger.info(
+            f"Initializing optimizer for {strategy_class.__name__} "
+            f"with {len(param_ranges)} parameters"
+        )
+
+    def _setup_logging(self) -> logging.Logger:
+        """Setup logging configuration."""
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.INFO)
+        
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        # File handler
+        fh = logging.FileHandler(self.output_dir / 'optimization.log')
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+        
+        # Console handler
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+        
+        return logger
+
+    def run_optimization(self, 
+                        max_workers: int = 4,
+                        timeout: Optional[int] = None) -> OptimizationResults:
+        """
+        Run the complete optimization process.
+        
+        Args:
+            max_workers: Maximum number of parallel workers
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            OptimizationResults containing all optimization results
+        """
+        start_time = time.time()
+        
+        try:
+            self.logger.info("Starting optimization process")
+            
+            # Create optimization config
+            config = OptimizationConfig(
+                strategy_class=self.strategy_class,
+                param_ranges=self.param_ranges,
+                data_path=self.base_config['data_path'],
+                base_config=self.base_config,
+                output_dir=self.output_dir,
+                max_parallel_tasks=max_workers,
+                task_timeout=timeout or 3600
+            )
+            
+            # Run optimization
+            coordinator = TaskCoordinator(config)
+            optimization_results = coordinator.run_optimization()
+            
+            # Generate visualizations
+            visualizer = StrategyVisualizer(self.output_dir)
+            plots = visualizer.generate_all_plots(optimization_results['results'])
+            
+            # Generate report
+            report_generator = ReportGenerator(optimization_results, self.output_dir)
+            report_path = report_generator.generate_markdown_report()
+            
+            # Compile results
+            execution_time = time.time() - start_time
+            results = OptimizationResults(
+                summary=optimization_results['summary'],
+                best_params=optimization_results['best_results'],
+                metrics=optimization_results['metrics'],
+                execution_time=execution_time,
+                plots_directory=visualizer.plots_dir,
+                report_path=report_path
+            )
+            
+            self.logger.info(
+                f"Optimization completed in {execution_time:.2f} seconds. "
+                f"Results saved to {self.output_dir}"
+            )
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error in optimization process: {str(e)}")
+            raise
+
+    def estimate_runtime(self, time_per_run: float = 60.0) -> Dict[str, float]:
+        """
+        Estimate total runtime for optimization.
+        
+        Args:
+            time_per_run: Estimated time per parameter combination in seconds
+            
+        Returns:
+            Dictionary containing runtime estimates
+        """
+        try:
+            # Calculate total combinations
+            total_combinations = 1
+            for param_range in self.param_ranges.values():
+                steps = (param_range['end'] - param_range['start']) / param_range['step']
+                total_combinations *= (int(steps) + 1)
+            
+            # Calculate estimates
+            total_runtime = total_combinations * time_per_run
+            
+            return {
+                'total_combinations': total_combinations,
+                'estimated_seconds': total_runtime,
+                'estimated_minutes': total_runtime / 60,
+                'estimated_hours': total_runtime / 3600
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error estimating runtime: {str(e)}")
+            raise
 
     @staticmethod
-    def validate_config(config: Dict[str, Any]) -> None:
+    def load_results(results_dir: str) -> OptimizationResults:
         """
-        Validate the base configuration.
-
-        Args:
-            config (Dict[str, Any]): Configuration dictionary.
-        """
-        required_fields = ['asset', 'data_path', 'initial_cash', 'base_currency']
+        Load optimization results from directory.
         
-        for field in required_fields:
-            if field not in config:
-                raise ValueError(f"Missing required configuration field: {field}")
-                
-        if not Path(config['data_path']).exists():
-            raise ValueError(f"Data file not found: {config['data_path']}")
+        Args:
+            results_dir: Directory containing optimization results
             
-        if config['initial_cash'] <= 0:
-            raise ValueError("Initial cash must be positive")
-
-    def run_single_backtest(self, params: Dict[str, float]) -> Dict[str, Any]:
-        """
-        Run a single backtest with given parameters.
-
-        Args:
-            params (Dict[str, float]): Parameters for the backtest.
-
         Returns:
-            Dict[str, Any]: Backtest result including metrics or error.
+            OptimizationResults object
         """
-        try:
-            # Initialize components
-            trade_manager = TradeManager(base_currency=self.base_config['base_currency'])
-            signal_database = SignalDatabase(trade_manager)
-
-            # Create strategy with parameters
-            strategy = DepegStrategy(
-                market=self.base_config['asset'],
-                trade_manager=trade_manager,
-                depeg_threshold=params['depeg_threshold'],
-                trade_amount=params['trade_amount'],
-                stop_loss=params.get('stop_loss'),
-                take_profit=params.get('take_profit'),
-                trailing_stop=params.get('trailing_stop')
-            )
-
-            portfolio_config = {
-                self.base_config['asset']: {
-                    'market_type': strategy.config['market_type'],
-                    'fees': strategy.config['fees'],
-                    'max_trades': strategy.config['max_trades'],
-                    'max_exposure': strategy.config['max_exposure']
-                }
-            }
-
-            portfolio = Portfolio(
-                initial_cash=self.base_config['initial_cash'],
-                portfolio_config=portfolio_config,
-                signal_database=signal_database,
-                trade_manager=trade_manager,
-                base_currency=self.base_config['base_currency']
-            )
-
-            metrics_module = MetricsModule(
-                market_data_path=self.base_config['data_path'],
-                base_currency=self.base_config['base_currency'],
-                metric_groups='basic',  
-                silent=True 
-            )
-
-            backtest_engine = BacktestEngine(
-                assets={self.base_config['asset']: self.base_config['data_path']},
-                strategies={self.base_config['asset']: strategy},
-                portfolio=portfolio,
-                trade_manager=trade_manager,
-                base_currency=self.base_config['base_currency'],
-                slippage=self.base_config.get('slippage', 0),
-                metrics=metrics_module,
-                signal_database=signal_database
-            )
-
-            # Run backtest
-            backtest_engine.preprocess_data()
-            backtest_engine.run_backtest()
-
-            # Get metrics
-            metrics = metrics_module.run()
-
-            result = {
-                'parameters': params,
-                'metrics': metrics,
-                'timestamp': datetime.now().strftime('%Y%m%d_%H%M%S')
-            }
-            
-            return result
+        results_dir = Path(results_dir)
         
-        except Exception as e:
-            print(f"\nError in backtest with params {params}: {str(e)}")  # Debug output
-            return {
-                'parameters': params,
-                'error': str(e)
-            }
-
-    def run_optimization(self, test_run: bool = False) -> Dict[str, Any]:
-        """
-        Run the full optimization process.
-
-        Args:
-            test_run (bool): Whether to run a test with limited combinations.
-
-        Returns:
-            Dict[str, Any]: Summary of the optimization.
-        """
-        try:
-            start_time = time.time()
-            print("\nStarting optimization process...")  # Debug output
-
-            # Get parameter combinations
-            combinations = self.param_grid.generate_combinations()
-            if test_run:
-                combinations = combinations[:3]
-                print(f"Test run with {len(combinations)} combinations")  # Debug output
-            else:
-                print(f"Full run with {len(combinations)} combinations")  # Debug output
-
-            # Setup progress bar
-            total_combinations = len(combinations)
-            progress_bar = tqdm(
-                total=total_combinations,
-                desc="Optimizing",
-                unit="test",
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-            )
-
-            results = []
-            successful = 0
-            failed = 0
-
-            # Run backtests
-            for i, params in enumerate(combinations):
-                print(f"\nRunning backtest {i+1}/{total_combinations} with params: {params}")  # Debug output
-                result = self.run_single_backtest(params)
-                
-                if 'error' not in result:
-                    successful += 1
-                    print(f"Backtest successful")  # Debug output
-                    self.results.add_result(
-                        params=result['parameters'],
-                        metrics=result['metrics']
-                    )
-                else:
-                    failed += 1
-                    print(f"Backtest failed: {result.get('error', 'Unknown error')}")  # Debug output
-                
-                results.append(result)
-                
-                # Update progress
-                progress_bar.set_postfix({
-                    'success': f"{successful}/{total_combinations}",
-                    'failed': failed
-                }, refresh=True)
-                progress_bar.update(1)
-
-            progress_bar.close()
-            print("\nAll backtests completed")  # Debug output
-
-            # Generate reports
-            print("Generating reports...")  # Debug output
-            self.visualizer.generate_complete_analysis()
-            summary = self._create_optimization_summary(start_time, results)
-            self.save_results()
-
-            return summary
-
-        except Exception as e:
-            print(f"\nOptimization error: {str(e)}")  # Debug output
-            if 'progress_bar' in locals():
-                progress_bar.close()
-            raise
-
-    def _create_optimization_summary(self, start_time: float, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Create optimization summary.
-
-        Args:
-            start_time (float): The time the optimization started.
-            results (List[Dict[str, Any]]): The results of the optimization.
-
-        Returns:
-            Dict[str, Any]: Summary of the optimization results.
-        """
-        try:
-            summary = {
-                'total_runs': len(results),
-                'successful_runs': len([r for r in results if 'error' not in r]),
-                'failed_runs': len([r for r in results if 'error' in r]),
-                'best_results': {},
-                'parameters': self.param_grid.get_param_info(),
-                'runtime': {
-                    'total_seconds': time.time() - start_time,
-                    'average_per_run': (time.time() - start_time) / len(results) if results else 0
-                },
-                'file_locations': {
-                    'base_directory': str(self.output_dir),
-                    'report_directory': str(self.report_dir),
-                    'plots_directory': str(self.plots_dir)
-                }
-            }
-
-            # Find best results for each metric
-            successful_results = [r for r in results if 'error' not in r]
-            if successful_results:
-                metrics = successful_results[0]['metrics'].keys()
-                for metric in metrics:
-                    best_result = max(successful_results, 
-                                    key=lambda x: x['metrics'].get(metric, float('-inf')))
-                    summary['best_results'][metric] = {
-                        'value': best_result['metrics'][metric],
-                        'parameters': best_result['parameters']
-                    }
-
-            # Save summary to the report directory
-            summary_path = self.report_dir / 'optimization_summary.json'
-            with open(summary_path, 'w') as f:
-                json.dump(summary, f, indent=4)
-
-            # Save failed runs separately if any exist
-            failed_results = [r for r in results if 'error' in r]
-            if failed_results:
-                failed_path = self.report_dir / 'failed_runs.json'
-                with open(failed_path, 'w') as f:
-                    json.dump(failed_results, f, indent=4)
-
-            return summary
-
-        except Exception as e:
-            logger.error(f"Error creating optimization summary: {str(e)}")
-            return {}
-
-    def estimate_runtime(self, single_run_time: float = 60) -> Dict[str, Any]:
-        """
-        Estimate the total runtime for optimization.
-
-        Args:
-            single_run_time (float): Estimated time for a single backtest in seconds.
-
-        Returns:
-            Dict[str, Any]: Runtime estimates including hours, minutes, and seconds.
-        """
-        total_seconds = self.param_grid.total_combinations * single_run_time
+        # Load summary
+        with open(results_dir / 'optimization_summary.json', 'r') as f:
+            summary = json.load(f)
         
-        hours = total_seconds / 3600
-        minutes = (total_seconds % 3600) / 60
-        seconds = total_seconds % 60
-
-        return {
-            'total_combinations': self.param_grid.total_combinations,
-            'total_seconds': total_seconds,
-            'estimated_time': {
-                'hours': hours,
-                'minutes': minutes,
-                'seconds': seconds
-            }
-        }
-
-    def save_results(self) -> None:
-        """Save results to CSV in the report directory."""
-        try:
-            results_path = self.report_dir / 'optimization_results.csv'
-            self.results.save_to_csv(str(results_path))
-            logger.info(f"Saved results to {results_path}")
-
-            # Save parameter combinations
-            param_path = self.report_dir / 'parameter_combinations.json'
-            with open(param_path, 'w') as f:
-                json.dump(self.param_grid.get_param_info(), f, indent=4)
-            logger.info(f"Saved parameter combinations to {param_path}")
-
-        except Exception as e:
-            logger.error(f"Error saving results: {str(e)}", exc_info=True)
-            raise
+        # Load results
+        with open(results_dir / 'optimization_results.json', 'r') as f:
+            results = json.load(f)
+        
+        return OptimizationResults(
+            summary=summary,
+            best_params=summary['best_results'],
+            metrics=summary.get('metrics', {}),
+            execution_time=summary.get('execution_time', 0),
+            plots_directory=results_dir / 'plots',
+            report_path=results_dir / 'optimization_report.md'
+        )

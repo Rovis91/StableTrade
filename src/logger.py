@@ -1,84 +1,119 @@
 import logging
 import os
-from typing import Optional
+from typing import Optional, Dict
+from pathlib import Path
+from datetime import datetime
+import glob
 
-# Dictionary to store log levels for different components
-LOG_LEVELS = {}
+# Dictionary to store log levels and configurations for different components
+LOG_LEVELS: Dict[str, str] = {}
+LOG_CONFIG = {
+    'save_logs': True,  # Global flag to enable/disable file logging
+    'max_log_files': 10,  # Maximum number of log files to keep per component
+    'log_dir': 'logs'  # Default directory for log files
+}
+
+def set_log_config(save_logs: bool = True, max_log_files: int = 10, log_dir: str = 'logs') -> None:
+    """
+    Configure global logging settings.
+
+    Args:
+        save_logs: Whether to save logs to files
+        max_log_files: Maximum number of log files to keep per component
+        log_dir: Directory to store log files
+    """
+    LOG_CONFIG.update({
+        'save_logs': save_logs,
+        'max_log_files': max_log_files,
+        'log_dir': log_dir
+    })
 
 def set_log_levels(levels: dict) -> None:
     """
-    Set log levels for different components of the application.
-
-    This function updates the global `LOG_LEVELS` dictionary to change the 
-    logging level for specific components.
+    Set log levels for different components.
 
     Args:
-        levels (dict): A dictionary mapping component names to their respective 
-                       log levels. Valid levels are 'DEBUG', 'INFO', 'WARNING', 
-                       'ERROR', 'CRITICAL'.
-
-    Example:
-        set_log_levels({'component1': 'DEBUG', 'component2': 'ERROR'})
+        levels: Dictionary mapping component names to log levels
     """
     global LOG_LEVELS
     LOG_LEVELS.update(levels)
+
+def cleanup_old_logs(component_name: str, max_files: int) -> None:
+    """
+    Clean up old log files keeping only the most recent ones.
+
+    Args:
+        component_name: Name of the component
+        max_files: Maximum number of files to keep
+    """
+    log_dir = Path(LOG_CONFIG['log_dir'])
+    log_pattern = f"{component_name}_*.log"
+    log_files = glob.glob(str(log_dir / log_pattern))
+    
+    # Sort files by modification time
+    log_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    
+    # Remove old files
+    for old_file in log_files[max_files:]:
+        try:
+            os.remove(old_file)
+        except OSError as e:
+            print(f"Error removing old log file {old_file}: {e}")
 
 def setup_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
     """
     Sets up a logger with the specified name and logging level.
 
-    Creates and configures a logger for a given component. The logger outputs
-    to both console and a file if `log_file` is provided. The logger's level 
-    is determined by the global `LOG_LEVELS` or defaults to 'INFO'.
-
     Args:
-        name (str): The name of the logger, typically the component name.
-        log_file (str, optional): Path to the log file for logging output.
-                                  If None, logging is only done to the console.
+        name: The name of the logger
+        log_file: Optional specific log file path
 
     Returns:
-        logging.Logger: The configured logger instance.
-
-    Example:
-        logger = setup_logger('component1', '/var/log/component1.log')
-        logger.info("Logger setup complete")
+        logging.Logger: Configured logger instance
     """
-    # Determine the log level from the global LOG_LEVELS dictionary
+    # Determine log level
     log_level = LOG_LEVELS.get(name, 'INFO')
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f'Invalid log level: {log_level}')
 
-    # Create or get the logger
+    # Create or get logger
     logger = logging.getLogger(name)
     logger.setLevel(numeric_level)
 
-    # Remove any existing handlers to avoid duplicate logs
+    # Clear existing handlers
     logger.handlers.clear()
 
     # Create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-    # Create console handler and set level to log_level
+    # Add console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # If a log file is specified, add a file handler if not already added
-    if log_file:
-        # Check if the file handler already exists
-        file_handler_exists = any(
-            isinstance(handler, logging.FileHandler) and handler.baseFilename == os.path.abspath(log_file)
-            for handler in logger.handlers
-        )
-        if not file_handler_exists:
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setLevel(numeric_level)
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
+    # Add file handler if enabled
+    if LOG_CONFIG['save_logs']:
+        # Create logs directory if it doesn't exist
+        log_dir = Path(LOG_CONFIG['log_dir'])
+        log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Avoid duplicate logs by disabling propagation
+        # Generate log file name if not provided
+        if not log_file:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_file = str(log_dir / f"{name}_{timestamp}.log")
+
+        # Cleanup old logs before adding new one
+        cleanup_old_logs(name, LOG_CONFIG['max_log_files'])
+
+        # Add file handler
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(numeric_level)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    # Prevent propagation
     logger.propagate = False
 
     return logger
