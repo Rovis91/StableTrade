@@ -323,7 +323,7 @@ class Portfolio:
             market_type = self.portfolio_config[asset]['market_type']
 
             if market_type == 'spot':
-                if trade['direction'] == 'sell':
+                if trade['exit_timestamp'] is not None:
                     if self.holdings.get(asset, 0) < amount:
                         raise ValueError(f"Not enough {asset} holdings to sell. Available: {self.holdings.get(asset, 0)}, Required: {amount}")
 

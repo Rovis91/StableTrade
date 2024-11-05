@@ -54,11 +54,11 @@ def run_backtest(custom: bool, log_levels: Optional[Dict[str, str]] = None):
         asset = DEFAULT_ASSET
         data_path = DEFAULT_DATA_PATH
         initial_cash = INITIAL_CASH
-        depeg_threshold = 3
-        trade_amount = 0.1
-        stop_loss = 0.05
-        take_profit = 0.10
-        trailing_stop = 0.02
+        depeg_threshold = 8
+        trade_amount = 0.2
+        stop_loss = 0.9
+        take_profit = 0.2
+        trailing_stop = None
         slippage = 0.0001
 
     assets = {asset: data_path}

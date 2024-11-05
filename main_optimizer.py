@@ -20,9 +20,9 @@ from src.logger import set_log_config, set_log_levels, setup_logger
 
 # Configure logging
 set_log_config(
-    save_logs=True,  # Enable file logging
-    max_log_files=10,  # Keep last 10 log files
-    log_dir='logs'  # Store logs in 'logs' directory
+    save_logs=False, 
+    max_log_files=10, 
+    log_dir='logs' 
 )
 
 # Set log levels for components
@@ -40,11 +40,11 @@ set_log_levels({
 logger = setup_logger('main')
 # Default configurations
 DEFAULT_PARAMS = {
-    'depeg_threshold': {'start': 0.01, 'end': 0.10, 'step': 0.01},
-    'trade_amount': {'start': 0.1, 'end': 1.0, 'step': 0.1},
-    'stop_loss': {'start': 0.01, 'end': 0.05, 'step': 0.01},
+    'depeg_threshold': {'start': 0.01, 'end': 0.05, 'step': 0.01},
+    'trade_amount': {'start': 0.1, 'end': 0.1, 'step': 0.1},
+    'stop_loss': {'start': 0.01, 'end': 0.01, 'step': 0.01},
     'take_profit': {'start': 0.02, 'end': 0.10, 'step': 0.02},
-    'trailing_stop': {'start': 0.01, 'end': 0.05, 'step': 0.01}
+    'trailing_stop': {'start': 0.01, 'end': 0.01, 'step': 0.01}
 }
 
 DEFAULT_CONFIG = {

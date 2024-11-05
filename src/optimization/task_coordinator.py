@@ -42,6 +42,8 @@ class TaskCoordinator:
         self.active_tasks: Dict[str, Any] = {}
         self.completed_tasks: Dict[str, Any] = {}
         self.failed_tasks: Dict[str, Any] = {}
+        self.current_batch = 0
+        self.state_file = Path(config.output_dir) / 'optimization_state.json'
         
         # Create output directory
         self.output_dir = Path(config.output_dir)
@@ -53,68 +55,85 @@ class TaskCoordinator:
             start_time = time.time()
             self.logger.info("Starting optimization process")
             
+            # Try to load previous state
+            resume_from = 0
+            if self.load_state():
+                resume_from = self.current_batch * 100  # Using batch_size=100
+                self.logger.info(f"Resuming from batch {self.current_batch}")
+
             with self.worker_manager:
                 combinations = self.param_grid.generate_combinations()
                 total_combinations = len(combinations)
                 self.logger.info(f"Generated {total_combinations} parameter combinations")
                 
-                completed = 0
-                failed = 0
+                completed = len(self.completed_tasks)
+                failed = len(self.failed_tasks)
                 results = []
                 
-                # Add batch processing for better logging
-                batch_size = 100  # Process in batches of 100
-                for i in range(0, total_combinations, batch_size):
-                    batch = combinations[i:i + batch_size]
-                    self.logger.info(f"Processing batch {i//batch_size + 1}/{(total_combinations+batch_size-1)//batch_size}")
-                    
-                    with ThreadPoolExecutor(max_workers=self.config.max_parallel_tasks) as executor:
-                        futures = []
+                batch_size = 10
+                try:
+                    for i in range(resume_from, total_combinations, batch_size):
+                        self.current_batch = i // batch_size
+                        batch = combinations[i:i + batch_size]
+                        self.logger.info(f"Processing batch {self.current_batch + 1}/{(total_combinations+batch_size-1)//batch_size}")
                         
-                        for params in batch:
-                            self.logger.debug(f"Submitting task with params: {params}")
-                            future = executor.submit(
-                                self._run_single_optimization,
-                                params
-                            )
-                            futures.append(future)
-                        
-                        for future in futures:
-                            try:
-                                result = future.result(timeout=self.config.task_timeout)
-                                if 'error' in result:
-                                    failed += 1
-                                    self.failed_tasks[result['task_id']] = result
-                                    self.logger.warning(f"Task failed: {result.get('error')}")
-                                else:
-                                    completed += 1
-                                    self.completed_tasks[result['task_id']] = result
-                                    results.append(result)
-                                    self.logger.debug(f"Task completed successfully: {result.get('task_id')}")
-                            except Exception as e:
-                                failed += 1
-                                self.logger.error(f"Task failed with exception: {str(e)}")
+                        with ThreadPoolExecutor(max_workers=self.config.max_parallel_tasks) as executor:
+                            futures = []
                             
-                            progress = (completed + failed) / total_combinations * 100
-                            self.logger.info(
-                                f"Progress: {progress:.1f}% ({completed} completed, {failed} failed) "
-                                f"- Batch {i//batch_size + 1}"
-                            )
-                
+                            for params in batch:
+                                future = executor.submit(
+                                    self._run_single_optimization,
+                                    params
+                                )
+                                futures.append(future)
+                            
+                            for future in futures:
+                                try:
+                                    result = future.result(timeout=self.config.task_timeout)
+                                    if 'error' in result:
+                                        failed += 1
+                                        self.failed_tasks[result['task_id']] = result
+                                    else:
+                                        completed += 1
+                                        self.completed_tasks[result['task_id']] = result
+                                        results.append(result)
+                                except Exception as e:
+                                    failed += 1
+                                    self.logger.error(f"Task failed: {str(e)}")
+                                
+                                progress = (completed + failed) / total_combinations * 100
+                                self.logger.info(f"Progress: {progress:.1f}% ({completed} completed, {failed} failed)")
+                        
+                        # Save state after each batch
+                        self.save_state()
+                        
+                except KeyboardInterrupt:
+                    self.logger.info("\nOptimization interrupted by user.")
+                    self.logger.info("Saving current state...")
+                    self.save_state()
+                    self.logger.info("You can resume the optimization later using the same output directory.")
+                    return {
+                        'status': 'interrupted',
+                        'completed': completed,
+                        'failed': failed,
+                        'progress': (completed + failed) / total_combinations * 100
+                    }
+                    
+                # Compile and save final results if completed
                 execution_time = time.time() - start_time
                 summary = self._compile_results(results, execution_time)
                 self._save_results(results, summary)
                 
-                self.logger.info(
-                    f"Optimization completed in {execution_time:.2f} seconds. "
-                    f"Total: {total_combinations}, Completed: {completed}, Failed: {failed}"
-                )
+                # Clean up state file if completed successfully
+                if self.state_file.exists():
+                    self.state_file.unlink()
+                
                 return summary
                 
         except Exception as e:
             self.logger.error(f"Error in optimization process: {str(e)}")
             raise
-        
+    
     def _run_single_optimization(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Run single optimization task."""
         try:
@@ -232,7 +251,39 @@ class TaskCoordinator:
             }
         else:
             return {'status': 'unknown', 'task_id': task_id}
-
+    
+    def save_state(self) -> None:
+        """Save current optimization state."""
+        state = {
+            'completed_tasks': self.completed_tasks,
+            'failed_tasks': self.failed_tasks,
+            'current_batch': self.current_batch,
+            'timestamp': time.time()
+        }
+        
+        try:
+            with open(self.state_file, 'w') as f:
+                json.dump(state, f)
+            self.logger.info(f"State saved to {self.state_file}")
+        except Exception as e:
+            self.logger.error(f"Failed to save state: {e}")
+    
+    def load_state(self) -> bool:
+        """Load previous optimization state if exists."""
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                self.completed_tasks = state['completed_tasks']
+                self.failed_tasks = state['failed_tasks']
+                self.current_batch = state['current_batch']
+                self.logger.info(f"Loaded state from {self.state_file}")
+                return True
+            except Exception as e:
+                self.logger.error(f"Failed to load state: {e}")
+                return False
+        return False
+    
     def get_progress_report(self) -> Dict[str, Any]:
         """Get current optimization progress report."""
         total = len(self.param_grid.generate_combinations())

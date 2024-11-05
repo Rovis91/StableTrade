@@ -24,7 +24,7 @@ class DepegStrategy(Strategy):
         self.config = {
             'market_type': 'spot',
             'fees': {'entry': 0.001, 'exit': 0.001},
-            'max_trades': 10,  
+            'max_trades': 5,  
             'max_exposure': 0.99
         }
 
@@ -49,14 +49,14 @@ class DepegStrategy(Strategy):
     def calculate_stop_loss(self, current_price: float) -> Optional[float]:
         """Calculate the stop loss based on the current price and stop loss percentage."""
         if self.stop_loss_percent is not None:
-            return current_price * (1 - self.stop_loss_percent)
+            return 0.1
         return None
 
     def calculate_take_profit(self, current_price: float, sma_20: float) -> float:
         """Calculate the take profit based on either a percentage or the SMA_20 value."""
         if self.take_profit_percent is not None:
             return current_price * (1 + self.take_profit_percent)
-        return sma_20
+        return 1
 
     def generate_signal(self, market_data: pd.Series, active_trades: list, portfolio_value: float, portfolio_cash: float) -> dict:
         """Generate trading signals based on the current market data and active trades."""
@@ -66,8 +66,8 @@ class DepegStrategy(Strategy):
         if pd.isna(sma_20):
             return {}
 
-        deviation = (current_price - 1) * 100
-        if deviation <= -self.depeg_threshold:
+        deviation = (1 - current_price) * 100
+        if current_price <= (1-(self.depeg_threshold/100)):
             self.logger.info(f"Buy condition met. Deviation: {deviation:.2f}% below SMA_20.")
             return {
                 'action': 'buy',
